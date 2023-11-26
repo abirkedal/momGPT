@@ -25,18 +25,21 @@ if __name__ == '__main__':
     full_dataset = pd.read_pickle('/home/andreas/JupyterNotebooks/data/sharadar/sepm.20231124.pkl')
     train_data = full_dataset[full_dataset['date'] < split_date]
     test_data = full_dataset[full_dataset['date'] >= split_date]
-    dataset = load_dataset('/home/andreas/JupyterNotebooks/data/sharadar')
+    train_data.to_csv('/home/andreas/JupyterNotebooks/data/sharadar/train.csv')
+    test_data.to_csv('/home/andreas/JupyterNotebooks/data/sharadar/test.csv')
+    data_files = {'train': 'train.csv', 'test': 'test.csv'}
+    split_dataset = load_dataset('/home/andreas/JupyterNotebooks/data/sharadar', data_files = data_files)
     # print(dataset.head())
     # exit()
 
     # owt by default only contains the 'train' split, so create a test split
-    split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
+    # split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
     # print(dataset["train"]["date"])
     # print(split_dataset)
     # This doesn't work, but I can create separate files and use DatasetDict.from_csv() to
     # create train and val sets
-    split_dataset['train'] = dataset['train'][dataset['train']['date'] < '2017-01-01']
-    split_dataset['val'] = dataset['train'][dataset['train']['date'] >= '2017-01-01']
+    # split_dataset['train'] = dataset['train'][dataset['train']['date'] < '2017-01-01']
+    # split_dataset['val'] = dataset['train'][dataset['train']['date'] >= '2017-01-01']
     print(split_dataset["train"]["date"])
 
     # this results in:
