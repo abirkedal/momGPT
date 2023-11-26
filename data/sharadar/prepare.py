@@ -10,7 +10,9 @@ from datasets import load_dataset # huggingface datasets
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
-num_proc = 8
+num_proc = 1
+
+split_date = '2017-01-01'
 
 # number of workers in load_dataset() call
 # best number might be different from num_proc above as it also depends on NW speed.
@@ -20,14 +22,22 @@ num_proc_load_dataset = num_proc
 if __name__ == '__main__':
     # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
     # dataset = load_dataset("openwebtext", num_proc=num_proc_load_dataset)
-    # dataset = pd.read_pickle('/home/andreas/JupyterNotebooks/data/sharadar/sepm.20231124.pkl')
+    full_dataset = pd.read_pickle('/home/andreas/JupyterNotebooks/data/sharadar/sepm.20231124.pkl')
+    train_data = full_dataset[full_dataset['date'] < split_date]
+    test_data = full_dataset[full_dataset['date'] >= split_date]
     dataset = load_dataset('/home/andreas/JupyterNotebooks/data/sharadar')
     # print(dataset.head())
     # exit()
 
     # owt by default only contains the 'train' split, so create a test split
     split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
-    split_dataset['val'] = split_dataset.pop('test') # rename the test split to val
+    # print(dataset["train"]["date"])
+    # print(split_dataset)
+    # This doesn't work, but I can create separate files and use DatasetDict.from_csv() to
+    # create train and val sets
+    split_dataset['train'] = dataset['train'][dataset['train']['date'] < '2017-01-01']
+    split_dataset['val'] = dataset['train'][dataset['train']['date'] >= '2017-01-01']
+    print(split_dataset["train"]["date"])
 
     # this results in:
     # >>> split_dataset
