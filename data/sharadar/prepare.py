@@ -23,12 +23,18 @@ if __name__ == '__main__':
     # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
     # dataset = load_dataset("openwebtext", num_proc=num_proc_load_dataset)
     full_dataset = pd.read_pickle('/home/andreas/JupyterNotebooks/data/sharadar/sepm.20231124.pkl')
+    
     train_data = full_dataset[full_dataset['date'] < split_date]
     test_data = full_dataset[full_dataset['date'] >= split_date]
+    # This creates a df where each rrow is a ticker, and the columns are for dates, so
+    # we should be able to feed in each row below
+    train_data = train_data[['date', 'ticker', 'ret_1d_ctc']].pivot(index='ticker', columns='date', values='ret_1d_ctc')
+    test_data = test_data[['date', 'ticker', 'ret_1d_ctc']].pivot(index='ticker', columns='date', values='ret_1d_ctc')
+    print(train_data.shape, test_data.shape)
     train_data.to_csv('/home/andreas/JupyterNotebooks/data/sharadar/train.csv')
     test_data.to_csv('/home/andreas/JupyterNotebooks/data/sharadar/test.csv')
     data_files = {'train': 'train.csv', 'test': 'test.csv'}
-    split_dataset = load_dataset('/home/andreas/JupyterNotebooks/data/sharadar', data_files = data_files)
+    # split_dataset = load_dataset('/home/andreas/JupyterNotebooks/data/sharadar', data_files = data_files)
     # print(dataset.head())
     # exit()
 
@@ -40,7 +46,8 @@ if __name__ == '__main__':
     # create train and val sets
     # split_dataset['train'] = dataset['train'][dataset['train']['date'] < '2017-01-01']
     # split_dataset['val'] = dataset['train'][dataset['train']['date'] >= '2017-01-01']
-    print(split_dataset["train"]["date"])
+    # print(train_data)
+    # print(split_dataset["train"])
 
     # this results in:
     # >>> split_dataset
@@ -58,10 +65,10 @@ if __name__ == '__main__':
     # we now want to tokenize the dataset. first define the encoding function (gpt2 bpe)
     enc = tiktoken.get_encoding("gpt2")
     def process(example):
-        print(example['ret_1d_ctc'])
+        # print(example)
         # ids = enc.encode_ordinary(example['ret_1d_ctc']) # encode_ordinary ignores any special tokens
-        ids = example['ret_1d_ctc']
-        print(ids)
+        ids = example
+        # print(ids)
         ids.append(enc.eot_token) # add the end of text token, e.g. 50256 for gpt2 bpe
         # note: I think eot should be prepended not appended... hmm. it's called "eot" though...
         out = {'ids': ids, 'len': len(ids)}
@@ -70,7 +77,7 @@ if __name__ == '__main__':
     # tokenize the dataset
     tokenized = split_dataset.map(
         process,
-        remove_columns=['Unnamed: 0', 'date', 'open', 'high', 'low', 'close', 'volume', 'dividends', 'closeunadj', 'lastupdated'],
+        remove_columns=[],
         desc="tokenizing the splits",
         num_proc=num_proc,
     )
