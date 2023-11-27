@@ -28,13 +28,18 @@ if __name__ == '__main__':
     test_data = full_dataset[full_dataset['date'] >= split_date]
     # This creates a df where each rrow is a ticker, and the columns are for dates, so
     # we should be able to feed in each row below
-    train_data = train_data[['date', 'ticker', 'ret_1d_ctc']].pivot(index='ticker', columns='date', values='ret_1d_ctc')
-    test_data = test_data[['date', 'ticker', 'ret_1d_ctc']].pivot(index='ticker', columns='date', values='ret_1d_ctc')
-    print(train_data.shape, test_data.shape)
+    train_tickers = list(train_data['ticker'].unique())
+    test_tickers = list(test_data['ticker'].unique())
+    ticker_list = list(set(train_tickers).intersection(test_tickers))
+    print(len(ticker_list))
+    train_data = train_data[['date', 'ticker', 'ret_1d_ctc']].pivot(index='date', columns='ticker', values='ret_1d_ctc')[ticker_list]
+    # print(train_data[['AABA', 'ZZ']])
+    test_data = test_data[['date', 'ticker', 'ret_1d_ctc']].pivot(index='date', columns='ticker', values='ret_1d_ctc')[ticker_list]
+    # print(train_data.shape, test_data.shape)
     train_data.to_csv('/home/andreas/JupyterNotebooks/data/sharadar/train.csv')
     test_data.to_csv('/home/andreas/JupyterNotebooks/data/sharadar/test.csv')
     data_files = {'train': 'train.csv', 'test': 'test.csv'}
-    # split_dataset = load_dataset('/home/andreas/JupyterNotebooks/data/sharadar', data_files = data_files)
+    split_dataset = load_dataset('/home/andreas/JupyterNotebooks/data/sharadar', data_files = data_files)
     # print(dataset.head())
     # exit()
 
