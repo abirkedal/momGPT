@@ -34,9 +34,9 @@ from model import MomGPTConfig, MomGPT
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
 out_dir = 'out'
-eval_interval = 2000
+eval_interval = 10
 log_interval = 1
-eval_iters = 200
+eval_iters = 10
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
@@ -48,7 +48,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 1024
+block_size = 10
 # model
 n_layer = 12
 n_head = 12
@@ -114,15 +114,15 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
-train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-print(train_data.shape)
-train_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').T.astype('float').values
-val_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/test.csv').set_index('date').T.astype('float').values
+# train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+# val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+# print(train_data.shape)
+train_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').fillna(0).T.astype('float').values
+val_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/test.csv').set_index('date').fillna(0).T.astype('float').values
 print(train_data.shape)
 def get_batch(split):
     data = train_data if split == 'train' else val_data
-    print(len(data), data.shape)
+    # print(len(data), data.shape)
     ix = torch.randint(len(data) - block_size, (batch_size,))
     j = torch.randint(data.shape[1], (1,))[0]
     # x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
@@ -157,8 +157,8 @@ if init_from == 'scratch':
     print("Initializing a new model from scratch")
     # determine the vocab size we'll use for from-scratch training
     if meta_vocab_size is None:
-        print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
+        print("defaulting to vocab_size of 1")
+    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
     gptconf = MomGPTConfig(**model_args)
     model = MomGPT(gptconf)
 elif init_from == 'resume':

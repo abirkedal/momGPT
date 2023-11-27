@@ -186,6 +186,7 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            # loss = F.mse_loss(logits.view(-1, logits.size(-1)), targets.view(-1))
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
@@ -336,7 +337,7 @@ class MomGPTConfig:
     vocab_size: int = 500 # This is probably the number of stocks in the universe
     n_layer: int = 12
     n_head: int = 12
-    n_embd: int = 128 # In our case this is the number of factors driving returns
+    n_embd: int = 1 # In our case this is the number of factors driving returns
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
@@ -349,7 +350,8 @@ class MomGPT(nn.Module):
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
+            # wte = nn.Embedding(config.vocab_size, config.n_embd),
+            wte = nn.Identity(config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
@@ -394,13 +396,16 @@ class MomGPT(nn.Module):
 
     def forward(self, idx, targets=None):
         device = idx.device
-        print(idx.size())
+        # print(idx.size())
+        # print(idx)
         b, t = idx.size()
+        # print(b, t)
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        # tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        tok_emb = torch.reshape(idx, (b, t, 1))
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
@@ -409,14 +414,17 @@ class MomGPT(nn.Module):
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            predictions = self.lm_head(x)
+            # print(logits.view(-1, logits.size(-1)).size())
+            # print(targets.view(-1).size())
+            # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = F.mse_loss(predictions.view(-1), targets.view(-1))
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            predictions = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        return predictions, loss
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
