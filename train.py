@@ -117,8 +117,8 @@ data_dir = os.path.join('data', dataset)
 # train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 # val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
 # print(train_data.shape)
-train_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').fillna(0).T.astype('float').values
-val_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/test.csv').set_index('date').fillna(0).T.astype('float').values
+train_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').replace([np.inf, -np.inf], np.nan).fillna(0).T.astype('float').values
+val_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/test.csv').set_index('date').replace([np.inf, -np.inf], np.nan).fillna(0).T.astype('float').values
 print(train_data.shape)
 def get_batch(split):
     data = train_data if split == 'train' else val_data
