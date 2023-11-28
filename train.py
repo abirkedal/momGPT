@@ -221,18 +221,22 @@ if ddp:
 @torch.no_grad()
 def estimate_loss():
     out = {}
+    target_out = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
+        target_losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
                 logits, loss = model(X, Y)
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
+                target_losses[k] = model.get_target_loss(Y).item()
         out[split] = losses.mean()
+        target_out[split] = target_losses.mean()
     model.train()
-    return out
+    return out, target_out
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -274,8 +278,8 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        losses, target_losses = estimate_loss()
+        print(f"step {iter_num}: train loss {losses['train']:.4f}, target train loss {target_losses['train']:.4f}, val loss {losses['val']:.4f}, target val loss {target_losses['val']:.4f}")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,

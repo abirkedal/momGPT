@@ -426,6 +426,10 @@ class MomGPT(nn.Module):
 
         return predictions, loss
 
+    def get_target_loss(self, targets): 
+        zeros = torch.zeros(targets.view(-1).size(), device=targets.device)
+        return F.mse_loss(zeros, targets.view(-1))
+
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
         # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
