@@ -23,6 +23,7 @@ import pickle
 from contextlib import nullcontext
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
@@ -245,6 +246,12 @@ if wandb_log and master_process:
 
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
+# Here the Y is the same as the X, but shifted one to the left
+data_tst = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').T.astype('float')
+data_tst_tnsr = torch.tensor(data_tst.values)
+print(X[0].size(), Y[0].size(), data_tst_tnsr.size())
+print(X[0])
+print(Y[0])
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
