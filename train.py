@@ -28,7 +28,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from model import GPTConfig, GPT
+from model import MomGPTConfig, MomGPT
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -116,11 +116,19 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset)
 train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+print(train_data.shape)
+train_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').T.astype('float').values
+val_data = pd.read_csv('/home/andreas/momGPT/data/sharadar/test.csv').set_index('date').T.astype('float').values
+print(train_data.shape)
 def get_batch(split):
     data = train_data if split == 'train' else val_data
+    print(len(data), data.shape)
     ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
-    y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+    j = torch.randint(data.shape[1], (1,))[0]
+    # x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
+    # y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+    x = torch.stack([torch.from_numpy((data[i:i+block_size, j])) for i in ix])
+    y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size, j])) for i in ix])
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
@@ -151,8 +159,8 @@ if init_from == 'scratch':
     if meta_vocab_size is None:
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
+    gptconf = MomGPTConfig(**model_args)
+    model = MomGPT(gptconf)
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
@@ -164,8 +172,8 @@ elif init_from == 'resume':
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = checkpoint_model_args[k]
     # create the model
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
+    gptconf = MomGPTConfig(**model_args)
+    model = MomGPT(gptconf)
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -249,9 +257,9 @@ X, Y = get_batch('train') # fetch the very first batch
 # Here the Y is the same as the X, but shifted one to the left
 data_tst = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').T.astype('float')
 data_tst_tnsr = torch.tensor(data_tst.values)
-print(X[0].size(), Y[0].size(), data_tst_tnsr.size())
-print(X[0])
-print(Y[0])
+print(X.size(), Y.size(), data_tst_tnsr.size())
+print(X)
+print(Y)
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed

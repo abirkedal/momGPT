@@ -169,6 +169,7 @@ class GPT(nn.Module):
 
     def forward(self, idx, targets=None):
         device = idx.device
+        # print(idx.size())
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
@@ -393,6 +394,7 @@ class MomGPT(nn.Module):
 
     def forward(self, idx, targets=None):
         device = idx.device
+        print(idx.size())
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
