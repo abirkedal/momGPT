@@ -129,6 +129,8 @@ def get_batch(split):
     # y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     x = torch.stack([torch.from_numpy((data[i:i+block_size, j])) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size, j])) for i in ix])
+    x = x.bfloat16()
+    y = y.bfloat16()
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
@@ -229,6 +231,8 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
+                X = X.bfloat16()
+                Y = Y.bfloat16() 
                 logits, loss = model(X, Y)
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
