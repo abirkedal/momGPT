@@ -50,9 +50,9 @@ gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 10
 # model
-n_layer = 12
-n_head = 12
-n_embd = 768
+n_layer = 1
+n_head = 2
+n_embd = 4
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
@@ -154,6 +154,8 @@ if os.path.exists(meta_path):
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
+print('Using the following model_args:', model_args)
+
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -240,6 +242,7 @@ def estimate_loss():
         out[split] = losses.mean()
         target_out[split] = target_losses.mean()
     model.train()
+    print(logits)
     return out, target_out
 
 # learning rate decay scheduler (cosine with warmup)
@@ -283,7 +286,7 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses, target_losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, target train loss {target_losses['train']:.4f}, val loss {losses['val']:.4f}, target val loss {target_losses['val']:.4f}")
+        print(f"step {iter_num}: train loss {losses['train']:.6f}, target train loss {target_losses['train']:.6f}, val loss {losses['val']:.6f}, target val loss {target_losses['val']:.6f}")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,

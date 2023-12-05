@@ -334,8 +334,8 @@ class GPT(nn.Module):
 @dataclass
 class MomGPTConfig:
     block_size: int = 1024
-    vocab_size: int = 500 # This is probably the number of stocks in the universe
-    n_layer: int = 12
+    vocab_size: int = 1 
+    n_layer: int = 1
     n_head: int = 12
     n_embd: int = 1 # In our case this is the number of factors driving returns
     dropout: float = 0.0
