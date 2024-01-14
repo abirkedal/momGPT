@@ -47,7 +47,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
-batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
+batch_size = 1024 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 10
 # model
 n_layer = 1
@@ -136,6 +136,8 @@ def get_batch(split):
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
     else:
         x, y = x.to(device), y.to(device)
+    # print('ix: ', ix)
+    # print('j: ', j)
     return x, y
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
@@ -224,12 +226,15 @@ if ddp:
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss():
+    # It isn't ideal to manually set the seed, this is only to understand a performance difference
+    torch.manual_seed(0)
     out = {}
     target_out = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         target_losses = torch.zeros(eval_iters)
+        nan_count = 0
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
@@ -239,10 +244,13 @@ def estimate_loss():
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
                 target_losses[k] = model.get_target_loss(Y).item()
+            else:
+                nan_count += 1
+        # print('nan_count: ', nan_count)
         out[split] = losses.mean()
         target_out[split] = target_losses.mean()
     model.train()
-    print(logits)
+    # print(logits)
     return out, target_out
 
 # learning rate decay scheduler (cosine with warmup)
@@ -265,6 +273,7 @@ if wandb_log and master_process:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # training loop
+torch.manual_seed(0)
 X, Y = get_batch('train') # fetch the very first batch
 # Here the Y is the same as the X, but shifted one to the left
 data_tst = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').T.astype('float')
