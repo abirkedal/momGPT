@@ -47,14 +47,15 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
-batch_size = 1024 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 10
+batch_size = 32 # 1024 # if gradient_accumulation_steps > 1, this is the micro-batch size
+block_size = 16 # 320
+
 # model
 n_layer = 1
 n_head = 2
-n_embd = 4
+n_embd = 3 # the number of dimensions used to embed the position
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
-bias = False # do we use bias inside LayerNorm and Linear layers?
+bias = True # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -163,8 +164,8 @@ if init_from == 'scratch':
     print("Initializing a new model from scratch")
     # determine the vocab size we'll use for from-scratch training
     if meta_vocab_size is None:
-        print("defaulting to vocab_size of 1")
-    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
+        print("defaulting to vocab_size of 32")
+    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else block_size
     gptconf = MomGPTConfig(**model_args)
     model = MomGPT(gptconf)
 elif init_from == 'resume':
@@ -241,6 +242,7 @@ def estimate_loss():
                 X = X.bfloat16()
                 Y = Y.bfloat16() 
                 logits, loss = model(X, Y)
+                print('Fitting', X.shape, Y.shape, logits.shape)
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
                 target_losses[k] = model.get_target_loss(Y).item()
@@ -279,8 +281,8 @@ X, Y = get_batch('train') # fetch the very first batch
 data_tst = pd.read_csv('/home/andreas/momGPT/data/sharadar/train.csv').set_index('date').T.astype('float')
 data_tst_tnsr = torch.tensor(data_tst.values)
 print(X.size(), Y.size(), data_tst_tnsr.size())
-print(X)
-print(Y)
+print('X', X)
+print('Y', Y)
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -359,7 +361,7 @@ while True:
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        # print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
     iter_num += 1
     local_iter_num += 1
 
