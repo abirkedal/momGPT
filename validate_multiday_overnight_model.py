@@ -25,6 +25,9 @@ from contextlib import nullcontext
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+import statsmodels.api as sm
+from statsmodels.tools.eval_measures import rmse
 import time
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -36,12 +39,15 @@ from model import OvnMomGPTConfig, OvnMomGPT
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
 out_dir = 'out'
+out_file = 'ckpt.pt'
 eval_interval = 10
 log_interval = 1
 eval_iters = 100
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
+
+eval_rf = True
 
 #important times of day
 intraday_start = datetime.time(10,00,00)
@@ -88,6 +94,8 @@ config_keys = [k for k,v in globals().items() if not k.startswith('_') and isins
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+if 'out_file' not in config.keys():
+    config['out_file'] = out_file
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -244,7 +252,7 @@ if init_from == 'scratch':
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    ckpt_path = os.path.join(out_dir, config['out_file'])
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
@@ -306,16 +314,43 @@ def compute_loss():
     target_out = {}
     model.eval()
     for split in ['train', 'val']:
+        
+            
         # losses = torch.zeros(eval_iters)
         # target_losses = torch.zeros(eval_iters)
         nan_count = 0
         # for k in range(eval_iters):
         X, Y = get_whole_split(split)
+        # print('shapes', torch.flatten(X, start_dim=1, end_dim=-1).cpu().float().numpy().shape, Y[:, -1, -1].cpu().float().numpy().shape)
+        x = sm.add_constant(torch.flatten(X, start_dim=1, end_dim=-1).cpu().float().numpy())
+        y = Y[:, -1, -1].cpu().float().numpy()
+
+        if split == 'train':
+            print('fitting regression')
+            mod = sm.OLS(y, x)
+            res = mod.fit()
+            if eval_rf:
+                print('fitting RF')
+                regr = RandomForestRegressor(max_depth=8, min_samples_leaf=10, random_state=0)
+                regr.fit(x, y)
         with ctx:
             X = X.bfloat16()
             Y = Y.bfloat16()
             # print('post bfloat', k)
             logits, loss = model(X, Y)
+        
+        ypred = res.predict(x)
+        root_mse = rmse(y, ypred)
+        root_sso = rmse(y, np.zeros(y.shape))
+
+        regr_root_mse = 0
+        if eval_rf:
+            regr_ypred = regr.predict(x)
+            regr_root_mse = rmse(y, regr_ypred)
+
+        # print('rmse', split, root_mse, root_sso)
+        print(split, 'ols r-squared:', 1.0-root_mse*root_mse/(root_sso*root_sso), 'RF rsquared:', 1.0-regr_root_mse*regr_root_mse/(root_sso*root_sso))
+        
         if not np.isnan(loss.item()):   
             losses = loss.item()
             target_losses = model.get_target_loss(Y).item()
@@ -323,11 +358,11 @@ def compute_loss():
             nan_count += 1
         # print('nan_count: ', nan_count)
         # print('predictions', logits.shape, logits.view(-1, logits.size(-2)))
-        # print('targets', Y.shape, Y)
+        # print('input', X.shape)
+        # print('targets', Y[:, -1, -1].shape, Y[:, -1, -1])
         out[split] = losses
         target_out[split] = target_losses
-    model.train()
-    # print(logits)
+
     return out, target_out
 
 # learning rate decay scheduler (cosine with warmup)
@@ -403,7 +438,7 @@ while local_iter_num < max_iters:
                     'config': config,
                 }
                 # print(f"saving checkpoint to {out_dir}")
-                # torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                # torch.save(checkpoint, os.path.join(out_dir, config['out_file']))
     if iter_num == 0 and eval_only:
         break
 
