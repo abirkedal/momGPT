@@ -41,7 +41,7 @@ log_interval = 1
 eval_iters = 100
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
-init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
+init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
 
 #important times of day
 intraday_start = datetime.time(10,00,00)
@@ -384,7 +384,11 @@ while True:
         losses, target_losses = estimate_loss()
         train_r2 = 1.0 - losses['train']/target_losses['train']
         val_r2 = 1.0 - losses['val']/target_losses['val']
+<<<<<<< HEAD
         print(f"step {iter_num}: train loss {losses['train']:.8f}, target train loss {target_losses['train']:.8f}, train r2 {train_r2:.8f}, train ovn linear r2 {train_ovn_linear_r2:.8f}, val loss {losses['val']:.8f}, target val loss {target_losses['val']:.8f}, val r2 {val_r2:.8f} val ovn linear r2 {val_ovn_linear_r2:.8f}")
+=======
+        print(f"step {iter_num}: train loss {losses['train']:.8f}, target train loss {target_losses['train']:.8f}, train r2 {train_r2:.8f}, val loss {losses['val']:.8f}, target val loss {target_losses['val']:.8f}, val r2 {val_r2:.8f}")
+>>>>>>> b38f6f8ac7d2775a5fdd76b0929dcc90912f3ca7
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
