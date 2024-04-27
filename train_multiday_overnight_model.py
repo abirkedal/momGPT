@@ -38,10 +38,10 @@ from model import OvnMomGPTConfig, OvnMomGPT
 out_dir = 'out'
 eval_interval = 10
 log_interval = 1
-eval_iters = 100
+eval_iters = 1000
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
-init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
+init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 
 #important times of day
 intraday_start = datetime.time(10,00,00)
@@ -60,6 +60,8 @@ batch_size = 1024 # if gradient_accumulation_steps > 1, this is the micro-batch 
 block_size = 4
 
 # model
+subtract_ovn_linear = False
+input_clip = 0.5
 n_layer = 2
 n_head = 1
 n_embd = 5
@@ -151,12 +153,19 @@ for ticker in tickers:
 train_data_df = data_df[data_df.index <= isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 train_data = train_data_df.values
 
-train_ovn_linear_r2 = (train_data_df[['into_close_safe_return', 'future_overnight_return']].corr().values[0][1])**2
+corr_data = train_data_df[['into_close_safe_return', 'future_overnight_return']].copy()
+corr_data['into_close_safe_return'] = corr_data['into_close_safe_return'].clip(lower=-input_clip, upper=input_clip)
+corr_mat = corr_data.corr()
+cov_mat = corr_data.cov()
+train_ovn_linear_r2 = (corr_mat.values[0][1])**2
+train_ovn_linear_beta = cov_mat.values[0][1]/cov_mat.values[0][0]
 
 val_data_df = data_df[data_df.index > isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 val_data = val_data_df.values
-val_ovn_linear_r2 = (val_data_df[['into_close_safe_return', 'future_overnight_return']].corr().values[0][1])**2
-print(train_data.shape, train_ovn_linear_r2, val_ovn_linear_r2)
+val_corr_data = val_data_df[['into_close_safe_return', 'future_overnight_return']].copy()
+val_corr_data['into_close_safe_return'] = val_corr_data['into_close_safe_return'].clip(lower=-input_clip, upper=input_clip)
+val_ovn_linear_r2 = (val_corr_data[['into_close_safe_return', 'future_overnight_return']].corr().values[0][1])**2
+print(train_data.shape, train_ovn_linear_r2, train_ovn_linear_beta, val_ovn_linear_r2)
 
 def get_batch(split):
     t = time.time()
@@ -193,8 +202,12 @@ def get_batch(split):
             if ds0 - gptconf.n_embd > 0:
                 # if count < batch_size:
                 j = torch.randint(ds0 - gptconf.n_embd, (1,))[0]
-                xl.append(torch.from_numpy((data[j:(j+gptconf.n_embd), :-1])))
-                yl.append(torch.from_numpy((data[j:(j+gptconf.n_embd), 1:])))
+                xd = np.clip(data[j:(j+gptconf.n_embd), :-1], -input_clip, input_clip)
+                yd = data[j:(j+gptconf.n_embd), 1:]
+                if subtract_ovn_linear:
+                    yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, 0]
+                xl.append(torch.from_numpy((xd)))
+                yl.append(torch.from_numpy((yd)))
                 count += 1
 
     t2 = time.time()
@@ -384,11 +397,9 @@ while True:
         losses, target_losses = estimate_loss()
         train_r2 = 1.0 - losses['train']/target_losses['train']
         val_r2 = 1.0 - losses['val']/target_losses['val']
-<<<<<<< HEAD
-        print(f"step {iter_num}: train loss {losses['train']:.8f}, target train loss {target_losses['train']:.8f}, train r2 {train_r2:.8f}, train ovn linear r2 {train_ovn_linear_r2:.8f}, val loss {losses['val']:.8f}, target val loss {target_losses['val']:.8f}, val r2 {val_r2:.8f} val ovn linear r2 {val_ovn_linear_r2:.8f}")
-=======
-        print(f"step {iter_num}: train loss {losses['train']:.8f}, target train loss {target_losses['train']:.8f}, train r2 {train_r2:.8f}, val loss {losses['val']:.8f}, target val loss {target_losses['val']:.8f}, val r2 {val_r2:.8f}")
->>>>>>> b38f6f8ac7d2775a5fdd76b0929dcc90912f3ca7
+
+        print(f"step {iter_num}: train loss {losses['train']:.8f}, target train loss {target_losses['train']:.8f}, train r2 {train_r2:.8f}, train ovn linear r2 {train_ovn_linear_r2:.8f}, train ovn linear beta {train_ovn_linear_beta:.8f}, val loss {losses['val']:.8f}, target val loss {target_losses['val']:.8f}, val r2 {val_r2:.8f} val ovn linear r2 {val_ovn_linear_r2:.8f}")
+
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
