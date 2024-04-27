@@ -60,7 +60,7 @@ batch_size = 1024 # if gradient_accumulation_steps > 1, this is the micro-batch 
 block_size = 4
 
 # model
-subtract_ovn_linear = False
+subtract_ovn_linear = True
 input_clip = 0.5
 n_layer = 2
 n_head = 1
@@ -183,6 +183,7 @@ def get_batch(split):
 
     xl = []
     yl = []
+    zl = []
 
     t1 = time.time()
     # print('get_batch prep', t1 - t)
@@ -204,10 +205,13 @@ def get_batch(split):
                 j = torch.randint(ds0 - gptconf.n_embd, (1,))[0]
                 xd = np.clip(data[j:(j+gptconf.n_embd), :-1], -input_clip, input_clip)
                 yd = data[j:(j+gptconf.n_embd), 1:]
+                zd = data[j:(j+gptconf.n_embd), 1:]
                 if subtract_ovn_linear:
                     yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, 0]
+                    zl.append(torch.from_numpy((zd)))
                 xl.append(torch.from_numpy((xd)))
                 yl.append(torch.from_numpy((yd)))
+                
                 count += 1
 
     t2 = time.time()
@@ -215,9 +219,10 @@ def get_batch(split):
     
     x = torch.stack(xl)
     y = torch.stack(yl)
-                  
+                      
     x = x.bfloat16()
     y = y.bfloat16()
+    
     # print(len(data), ix)
     # print('x', x.shape, y.shape)
     # print(y)
@@ -226,10 +231,22 @@ def get_batch(split):
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
     else:
         x, y = x.to(device), y.to(device)
+    if len(zl) > 0:
+        z = torch.stack(zl)
+        z = z.bfloat16()
+        
+        if device_type == 'cuda':
+            z = z.pin_memory().to(device, non_blocking=True)
+        else:
+            z = z.to(device)
     # print('ix: ', ix)
     t3 = time.time()
     # print('get_batch completion', t3 - t2)
-    return x, y
+
+    if len(zl) > 0:
+        return x, y, z
+    else:
+        return x, y, None
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -327,10 +344,12 @@ def estimate_loss():
         target_losses = torch.zeros(eval_iters)
         nan_count = 0
         for k in range(eval_iters):
-            X, Y = get_batch(split)
+            X, Y, Z = get_batch(split)
             with ctx:
                 X = X.bfloat16()
                 Y = Y.bfloat16()
+                if subtract_ovn_linear:
+                    Z = Z.bfloat16()
                 # print('post bfloat', k)
                 logits, loss = model(X, Y)
 
@@ -379,7 +398,7 @@ data_df = data_df.rename(columns={'level_0': 'ticker'})
 
 train_data = data_df[data_df.index <= isos_split_date][['overnight_return', 'into_close_safe_return', 'intraday_return', 'future_overnight_return']].fillna(0).astype('float').values
 
-X, Y = get_batch('train') # fetch the very first batch
+X, Y, Z = get_batch('train') # fetch the very first batch
 print(X.size(), Y.size(), torch.tensor(train_data).size())
 # print(X)
 # print(Y)
@@ -439,7 +458,7 @@ while True:
             logits, loss = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
+        X, Y, Z = get_batch('train')
         # backward pass, with gradient scaling if training in fp16
         if not np.isnan(loss.item()):
             scaler.scale(loss).backward()
