@@ -294,6 +294,7 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            
             # loss = F.mse_loss(logits.view(-1, logits.size(-1)), targets.view(-1))
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
@@ -791,6 +792,7 @@ class OvnMomGPT(nn.Module):
             predictions = self.lm_head(x)
             
             loss = F.mse_loss(predictions[:, -1, :].view(-1), targets[:, -1, -1])
+            # print(predictions[:, -1, :].view(-1).shape, targets[:, -1, -1].shape)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             predictions = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

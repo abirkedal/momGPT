@@ -333,6 +333,8 @@ def estimate_loss():
                 Y = Y.bfloat16()
                 # print('post bfloat', k)
                 logits, loss = model(X, Y)
+
+                print(logits[:, -1, :].view(-1).shape, Y[:, -1, -1].shape)
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
                 target_losses[k] = model.get_target_loss(Y).item()
