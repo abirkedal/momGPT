@@ -207,7 +207,7 @@ def get_batch(split):
                 yd = data[j:(j+gptconf.n_embd), 1:]
                 zd = data[j:(j+gptconf.n_embd), 1:]
                 if subtract_ovn_linear:
-                    yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, 0]
+                    yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, 1]
                     zl.append(torch.from_numpy((zd)))
                 xl.append(torch.from_numpy((xd)))
                 yl.append(torch.from_numpy((yd)))
@@ -338,22 +338,31 @@ def estimate_loss():
     # torch.manual_seed(0)
     out = {}
     target_out = {}
+    corrcoef_out = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         target_losses = torch.zeros(eval_iters)
+        corrcoefs = torch.zeros(eval_iters)
         nan_count = 0
         for k in range(eval_iters):
             X, Y, Z = get_batch(split)
             with ctx:
                 X = X.bfloat16()
                 Y = Y.bfloat16()
+                
+                logits, loss = model(X, Y)
+                
                 if subtract_ovn_linear:
                     Z = Z.bfloat16()
-                # print('post bfloat', k)
-                logits, loss = model(X, Y)
-
-                print(logits[:, -1, :].view(-1).shape, Y[:, -1, -1].shape)
+                    prediction = torch.add(logits[:, -1, :].view(-1), X[:, -1, 0],
+                                           alpha=train_ovn_linear_beta)
+                    cc = torch.corrcoef(torch.row_stack((prediction, Z[:, -1, -1])))
+                else:
+                    cc = torch.corrcoef(torch.row_stack((logits[:, -1, :].view(-1), Y[:, -1, -1])))
+                # print(X.shape, cc.shape, prediction.shape, logits[:, -1, :].view(-1).shape, X[:, -1, 0].shape)
+                # print(cc.data[0][1].item())
+                corrcoefs[k] = cc.data[0][1].item()
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
                 target_losses[k] = model.get_target_loss(Y).item()
@@ -364,8 +373,9 @@ def estimate_loss():
         # print('targets', Y.shape, Y)
         out[split] = losses.mean()
         target_out[split] = target_losses.mean()
+        corrcoef_out[split] = corrcoefs.mean()
     model.train()
-    # print(logits)
+    print(split, 'average corrcoef', corrcoef_out[split])
     return out, target_out
 
 # learning rate decay scheduler (cosine with warmup)
