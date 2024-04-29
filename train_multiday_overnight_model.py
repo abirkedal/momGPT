@@ -158,7 +158,7 @@ corr_data['into_close_safe_return'] = corr_data['into_close_safe_return'].clip(l
 corr_mat = corr_data.corr()
 cov_mat = corr_data.cov()
 train_ovn_linear_r2 = (corr_mat.values[0][1])**2
-train_ovn_linear_beta = cov_mat.values[0][1]/cov_mat.values[0][0]
+train_ovn_linear_beta = cov_mat.values[0][1]/cov_mat.values[1][1]
 
 val_data_df = data_df[data_df.index > isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 val_data = val_data_df.values
@@ -204,8 +204,8 @@ def get_batch(split):
                 # if count < batch_size:
                 j = torch.randint(ds0 - gptconf.n_embd, (1,))[0]
                 xd = np.clip(data[j:(j+gptconf.n_embd), :-1], -input_clip, input_clip)
-                yd = data[j:(j+gptconf.n_embd), 1:]
-                zd = data[j:(j+gptconf.n_embd), 1:]
+                yd = data[j:(j+gptconf.n_embd), 1:].copy()
+                zd = data[j:(j+gptconf.n_embd), 1:].copy()
                 if subtract_ovn_linear:
                     yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, 1]
                     zl.append(torch.from_numpy((zd)))
@@ -339,11 +339,15 @@ def estimate_loss():
     out = {}
     target_out = {}
     corrcoef_out = {}
+    corrcoef_std_out = {}
+    corrcoef_lin_out = {}
+    corrcoef_lin_std_out = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         target_losses = torch.zeros(eval_iters)
         corrcoefs = torch.zeros(eval_iters)
+        corrcoefs_lin = torch.zeros(eval_iters)
         nan_count = 0
         for k in range(eval_iters):
             X, Y, Z = get_batch(split)
@@ -352,30 +356,37 @@ def estimate_loss():
                 Y = Y.bfloat16()
                 
                 logits, loss = model(X, Y)
+
+                linear_pred = X[:, -1, 1]
                 
                 if subtract_ovn_linear:
                     Z = Z.bfloat16()
-                    prediction = torch.add(logits[:, -1, :].view(-1), X[:, -1, 0],
+                    prediction = torch.add(logits[:, -1, :].view(-1), linear_pred,
                                            alpha=train_ovn_linear_beta)
                     cc = torch.corrcoef(torch.row_stack((prediction, Z[:, -1, -1])))
+                    cc_lin = torch.corrcoef(torch.row_stack((train_ovn_linear_beta * linear_pred, Z[:, -1, -1])))
                 else:
                     cc = torch.corrcoef(torch.row_stack((logits[:, -1, :].view(-1), Y[:, -1, -1])))
+                    cc_lin = torch.corrcoef(torch.row_stack((train_ovn_linear_beta * linear_pred, Y[:, -1, -1])))
                 # print(X.shape, cc.shape, prediction.shape, logits[:, -1, :].view(-1).shape, X[:, -1, 0].shape)
                 # print(cc.data[0][1].item())
                 corrcoefs[k] = cc.data[0][1].item()
+                corrcoefs_lin[k] = cc_lin.data[0][1].item()
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
                 target_losses[k] = model.get_target_loss(Y).item()
             else:
                 nan_count += 1
-        # print('nan_count: ', nan_count)
-        # print('predictions', logits.shape, logits.view(-1, logits.size(-2)))
-        # print('targets', Y.shape, Y)
+
         out[split] = losses.mean()
         target_out[split] = target_losses.mean()
         corrcoef_out[split] = corrcoefs.mean()
+        corrcoef_std_out[split] = corrcoefs.std()
+        corrcoef_lin_out[split] = corrcoefs_lin.mean()
+        corrcoef_lin_std_out[split] = corrcoefs_lin.std()
+        print(split, 'average corrcoef', corrcoef_out[split].item(), corrcoef_lin_out[split].item(), 'std', corrcoef_std_out[split].item(), corrcoef_lin_std_out[split].item())
     model.train()
-    print(split, 'average corrcoef', corrcoef_out[split])
+
     return out, target_out
 
 # learning rate decay scheduler (cosine with warmup)
