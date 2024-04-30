@@ -158,7 +158,7 @@ corr_data['into_close_safe_return'] = corr_data['into_close_safe_return'].clip(l
 corr_mat = corr_data.corr()
 cov_mat = corr_data.cov()
 train_ovn_linear_r2 = (corr_mat.values[0][1])**2
-train_ovn_linear_beta = cov_mat.values[0][1]/cov_mat.values[1][1]
+train_ovn_linear_beta = cov_mat.values[0][1]/cov_mat.values[0][0]
 
 val_data_df = data_df[data_df.index > isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 val_data = val_data_df.values
@@ -340,6 +340,7 @@ def estimate_loss():
     # torch.manual_seed(0)
     out = {}
     target_out = {}
+    cov_means_out = {}
     corrcoef_means_out = {}
     corrcoef_std_out2 = {}
 
@@ -348,6 +349,7 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         target_losses = torch.zeros(eval_iters)
         corrcoefs_all = torch.zeros((eval_iters, 5, 5))
+        cov_all = torch.zeros((eval_iters, 5, 5))
 
         nan_count = 0
         for k in range(eval_iters):
@@ -367,6 +369,7 @@ def estimate_loss():
                     new_mat = torch.row_stack((prediction, train_ovn_linear_beta * linear_pred,
                                                logits[:, -1, :].view(-1), Y[:, -1, -1], Z[:, -1, -1]))
                     corrcoefs_mat = torch.corrcoef(new_mat)
+                    cov_mat = torch.cov(new_mat)
                                               
                 else:
                     prediction = torch.add(logits[:, -1, :].view(-1), linear_pred,
@@ -374,8 +377,10 @@ def estimate_loss():
                     new_mat = torch.row_stack((prediction, train_ovn_linear_beta * linear_pred,
                                                logits[:, -1, :].view(-1), Y[:, -1, -1], Z[:, -1, -1]))
                     corrcoefs_mat = torch.corrcoef(new_mat)
+                    cov_mat = torch.cov(new_mat)
                                               
                 corrcoefs_all[k] = corrcoefs_mat.data
+                cov_all[k] = cov_mat.data
 
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
@@ -386,18 +391,27 @@ def estimate_loss():
         out[split] = losses.mean()
         target_out[split] = target_losses.mean()
 
+        cov_final = torch.zeros((5,5))
         corrcoefs_final = torch.zeros((5,5))
         corrcoefs_final_std = torch.zeros((5,5))
         for i in range(5):
             for j in range(5):
+                cov_final[i][j] = cov_all[:, i, j].mean()
                 corrcoefs_final[i][j] = corrcoefs_all[:, i, j].mean()
                 corrcoefs_final_std[i][j] = corrcoefs_all[:, i, j].std()
 
+        cov_means_out[split] = cov_final
         corrcoef_means_out[split] = corrcoefs_final
         corrcoef_std_out2[split] = corrcoefs_final_std
 
-        print(split, 'means Z', corrcoef_means_out[split][-1], 'std Z', corrcoef_std_out2[split][-1])
-        print(split, 'means Y', corrcoef_means_out[split][-2], 'std Y', corrcoef_std_out2[split][-2])
+        print(split, 'means')
+        print(cov_means_out[split])
+        print(cov_means_out[split][0][-1].item()/cov_means_out[split][0][0].item(),cov_means_out[split][1][-1].item()/cov_means_out[split][1][1].item(),cov_means_out[split][2][-1].item()/cov_means_out[split][2][2].item(),cov_means_out[split][0][-2].item()/cov_means_out[split][0][0].item(),cov_means_out[split][1][-2].item()/cov_means_out[split][1][1].item(),cov_means_out[split][2][-2].item()/cov_means_out[split][2][2].item())
+        print(corrcoef_means_out[split])
+        print(split, 'std')
+        print(corrcoef_std_out2[split])
+        # print(split, 'means Z', corrcoef_means_out[split][-1], 'std Z', corrcoef_std_out2[split][-1])
+        # print(split, 'means Y', corrcoef_means_out[split][-2], 'std Y', corrcoef_std_out2[split][-2])
         
     model.train()
 
