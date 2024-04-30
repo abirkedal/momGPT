@@ -209,6 +209,8 @@ def get_batch(split):
                 if subtract_ovn_linear:
                     yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, 1]
                     zl.append(torch.from_numpy((zd)))
+                    # print('yd', yd)
+                    # print('zd', zd)
                 xl.append(torch.from_numpy((xd)))
                 yl.append(torch.from_numpy((yd)))
                 
@@ -338,16 +340,26 @@ def estimate_loss():
     # torch.manual_seed(0)
     out = {}
     target_out = {}
-    corrcoef_out = {}
-    corrcoef_std_out = {}
-    corrcoef_lin_out = {}
-    corrcoef_lin_std_out = {}
+    corrcoef_means_out = {}
+    corrcoef_std_out2 = {}
+    
+    # corrcoef_out = {}
+    # corrcoef_std_out = {}
+    # corrcoef_lin_out = {}
+    # corrcoef_lin_std_out = {}
+    # corrcoef_nonlin_out = {}
+    # corrcoef_nonlin2_out = {}
+    # corrcoef_nonlin_std_out = {}
+    # corrcoef_nonlin2_std_out = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         target_losses = torch.zeros(eval_iters)
-        corrcoefs = torch.zeros(eval_iters)
-        corrcoefs_lin = torch.zeros(eval_iters)
+        corrcoefs_all = torch.zeros((eval_iters, 5, 5))
+        # corrcoefs = torch.zeros(eval_iters)
+        # corrcoefs_lin = torch.zeros(eval_iters)
+        # corrcoefs_nonlin = torch.zeros(eval_iters)
+        # corrcoefs_nonlin2 = torch.zeros(eval_iters)
         nan_count = 0
         for k in range(eval_iters):
             X, Y, Z = get_batch(split)
@@ -358,20 +370,42 @@ def estimate_loss():
                 logits, loss = model(X, Y)
 
                 linear_pred = X[:, -1, 1]
+
+                # print('XYZ', X[0,:,:], Y[0,:,:], Z[0,:,:])
+                # print('XYZs', X[0, -1, 1], Y[0, -1, -1], Z[0, -1, -1])
                 
                 if subtract_ovn_linear:
                     Z = Z.bfloat16()
                     prediction = torch.add(logits[:, -1, :].view(-1), linear_pred,
                                            alpha=train_ovn_linear_beta)
-                    cc = torch.corrcoef(torch.row_stack((prediction, Z[:, -1, -1])))
-                    cc_lin = torch.corrcoef(torch.row_stack((train_ovn_linear_beta * linear_pred, Z[:, -1, -1])))
+                    new_mat = torch.row_stack((prediction, train_ovn_linear_beta * linear_pred,
+                                               logits[:, -1, :].view(-1), Y[:, -1, -1], Z[:, -1, -1]))
+                    corrcoefs_mat = torch.corrcoef(new_mat)
+                                              
+                    # cc = torch.corrcoef(torch.row_stack((prediction, Z[:, -1, -1])))
+                    # # print(cc.data[0][1].item(), corrcoefs_mat.data)
+                    # cc_lin = torch.corrcoef(torch.row_stack((train_ovn_linear_beta * linear_pred, Z[:, -1, -1])))
+                    # cc_nonlin = torch.corrcoef(torch.row_stack((logits[:, -1, :].view(-1), Y[:, -1, -1])))
+                    # cc_nonlin2 = torch.corrcoef(torch.row_stack((logits[:, -1, :].view(-1), Z[:, -1, -1])))
                 else:
-                    cc = torch.corrcoef(torch.row_stack((logits[:, -1, :].view(-1), Y[:, -1, -1])))
-                    cc_lin = torch.corrcoef(torch.row_stack((train_ovn_linear_beta * linear_pred, Y[:, -1, -1])))
+                    # cc = torch.corrcoef(torch.row_stack((logits[:, -1, :].view(-1), Y[:, -1, -1])))
+                    # cc_lin = torch.corrcoef(torch.row_stack((train_ovn_linear_beta * linear_pred, Y[:, -1, -1])))
+                    # cc_nonlin = cc
+                    # cc_nonlin2 = cc
+                    prediction = torch.add(logits[:, -1, :].view(-1), linear_pred,
+                                           alpha=train_ovn_linear_beta)
+                    new_mat = torch.row_stack((prediction, train_ovn_linear_beta * linear_pred,
+                                               logits[:, -1, :].view(-1), Y[:, -1, -1], Z[:, -1, -1]))
+                    corrcoefs_mat = torch.corrcoef(new_mat)
+                                              
                 # print(X.shape, cc.shape, prediction.shape, logits[:, -1, :].view(-1).shape, X[:, -1, 0].shape)
                 # print(cc.data[0][1].item())
-                corrcoefs[k] = cc.data[0][1].item()
-                corrcoefs_lin[k] = cc_lin.data[0][1].item()
+                corrcoefs_all[k] = corrcoefs_mat.data
+                # corrcoefs[k] = cc.data[0][1].item()
+                # corrcoefs_lin[k] = cc_lin.data[0][1].item()
+                # corrcoefs_lin[k] = cc_lin.data[0][1].item()
+                # corrcoefs_nonlin[k] = cc_nonlin.data[0][1].item()
+                # corrcoefs_nonlin2[k] = cc_nonlin2.data[0][1].item()
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
                 target_losses[k] = model.get_target_loss(Y).item()
@@ -380,11 +414,28 @@ def estimate_loss():
 
         out[split] = losses.mean()
         target_out[split] = target_losses.mean()
-        corrcoef_out[split] = corrcoefs.mean()
-        corrcoef_std_out[split] = corrcoefs.std()
-        corrcoef_lin_out[split] = corrcoefs_lin.mean()
-        corrcoef_lin_std_out[split] = corrcoefs_lin.std()
-        print(split, 'average corrcoef', corrcoef_out[split].item(), corrcoef_lin_out[split].item(), 'std', corrcoef_std_out[split].item(), corrcoef_lin_std_out[split].item())
+        # print(corrcoefs_all[:,0,0].mean())
+        corrcoefs_final = torch.zeros((5,5))
+        corrcoefs_final_std = torch.zeros((5,5))
+        for i in range(5):
+            for j in range(5):
+                corrcoefs_final[i][j] = corrcoefs_all[:, i, j].mean()
+                corrcoefs_final_std[i][j] = corrcoefs_all[:, i, j].std()
+
+        corrcoef_means_out[split] = corrcoefs_final
+        corrcoef_std_out2[split] = corrcoefs_final_std
+        # corrcoef_out[split] = corrcoefs.mean()
+        # corrcoef_std_out[split] = corrcoefs.std()
+        # corrcoef_lin_out[split] = corrcoefs_lin.mean()
+        # corrcoef_lin_std_out[split] = corrcoefs_lin.std()
+        # corrcoef_nonlin_out[split] = corrcoefs_nonlin.mean()
+        # corrcoef_nonlin_std_out[split] = corrcoefs_nonlin.std()
+        # corrcoef_nonlin2_out[split] = corrcoefs_nonlin2.mean()
+        # corrcoef_nonlin2_std_out[split] = corrcoefs_nonlin2.std()
+        print(split, 'means Z', corrcoef_means_out[split][-1], 'std Z', corrcoef_std_out2[split][-1])
+        print(split, 'means Y', corrcoef_means_out[split][-2], 'std Y', corrcoef_std_out2[split][-2])
+        
+        #print(split, 'average corrcoef', corrcoef_out[split].item(), corrcoef_lin_out[split].item(), corrcoef_nonlin_out[split].item(), corrcoef_nonlin2_out[split].item(), 'std', corrcoef_std_out[split].item(), corrcoef_lin_std_out[split].item(), corrcoef_nonlin_std_out[split].item(), corrcoef_nonlin2_std_out[split].item())
     model.train()
 
     return out, target_out
