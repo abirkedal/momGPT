@@ -41,7 +41,7 @@ log_interval = 1
 eval_iters = 1000
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
-init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
+init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
 
 #important times of day
 intraday_start = datetime.time(10,00,00)
@@ -61,6 +61,7 @@ block_size = 4
 
 # model
 subtract_ovn_linear = True
+drop_any_nan = True
 input_clip = 0.5
 n_layer = 2
 n_head = 1
@@ -139,16 +140,20 @@ ret_cols = ['overnight_return', 'into_close_safe_return', 'intraday_return', 'fu
 train_data_df = data_df[data_df.index <= isos_split_date][['ticker'] + ret_cols]
 train_data_gb = train_data_df.groupby('ticker')
 tickers = list(train_data_gb.groups.keys())
-train_data_vals_dict = {}
-for ticker in tickers:
-    train_data_vals_dict[ticker]= train_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
-
+# print(tickers[0], train_data_gb.get_group(tickers[0])[ret_cols])
+# print(tickers[0], train_data_gb.get_group(tickers[0])[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values)
 val_data_df = data_df[data_df.index > isos_split_date][['ticker'] + ret_cols]
 val_data_gb = val_data_df.groupby('ticker')
-tickers = list(val_data_gb.groups.keys())
+
+train_data_vals_dict = {}
 val_data_vals_dict = {}
 for ticker in tickers:
-    val_data_vals_dict[ticker]= val_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
+    if drop_any_nan:
+        train_data_vals_dict[ticker]= train_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna().astype('float').values
+        val_data_vals_dict[ticker]= val_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna().astype('float').values
+    else:
+        train_data_vals_dict[ticker]= train_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
+        val_data_vals_dict[ticker]= val_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
 
 train_data_df = data_df[data_df.index <= isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 train_data = train_data_df.values
@@ -192,6 +197,7 @@ def get_batch(split):
     for i in ix:
         if count < batch_size:
             ticker = tickers[i]
+            # ticker = tickers[0]
             # My old version that used the following is incredibly slow, since we are pawing through the entire
             # datadf each iteration:
             # data = datadf[datadf.ticker == ticker][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
@@ -203,9 +209,12 @@ def get_batch(split):
             if ds0 - gptconf.n_embd > 0:
                 # if count < batch_size:
                 j = torch.randint(ds0 - gptconf.n_embd, (1,))[0]
+                # j = 0
                 xd = np.clip(data[j:(j+gptconf.n_embd), :-1], -input_clip, input_clip)
                 yd = data[j:(j+gptconf.n_embd), 1:].copy()
                 zd = data[j:(j+gptconf.n_embd), 1:].copy()
+                # print(xd)
+                # print(zd)
                 if subtract_ovn_linear:
                     yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, 1]
                     zl.append(torch.from_numpy((zd)))
@@ -405,11 +414,12 @@ def estimate_loss():
         corrcoef_std_out2[split] = corrcoefs_final_std
 
         print(split, 'means')
-        print(cov_means_out[split])
+        # print(cov_means_out[split])
         print(cov_means_out[split][0][-1].item()/cov_means_out[split][0][0].item(),cov_means_out[split][1][-1].item()/cov_means_out[split][1][1].item(),cov_means_out[split][2][-1].item()/cov_means_out[split][2][2].item(),cov_means_out[split][0][-2].item()/cov_means_out[split][0][0].item(),cov_means_out[split][1][-2].item()/cov_means_out[split][1][1].item(),cov_means_out[split][2][-2].item()/cov_means_out[split][2][2].item())
-        print(corrcoef_means_out[split])
-        print(split, 'std')
-        print(corrcoef_std_out2[split])
+        print(cov_means_out[split][0][-1].item()/np.sqrt(cov_means_out[split][0][0].item()*cov_means_out[split][-1][-1].item()),cov_means_out[split][1][-1].item()/np.sqrt(cov_means_out[split][1][1].item()*cov_means_out[split][-1][-1].item()),cov_means_out[split][2][-1].item()/np.sqrt(cov_means_out[split][2][2].item()*cov_means_out[split][-1][-1].item()),cov_means_out[split][0][-2].item()/np.sqrt(cov_means_out[split][0][0].item()*cov_means_out[split][-2][-2].item()),cov_means_out[split][1][-2].item()/np.sqrt(cov_means_out[split][1][1].item()*cov_means_out[split][-2][-2].item()),cov_means_out[split][2][-2].item()/np.sqrt(cov_means_out[split][2][2].item()*cov_means_out[split][-2][-2].item()))
+        # print(corrcoef_means_out[split])
+        # print(split, 'std')
+        # print(corrcoef_std_out2[split])
         # print(split, 'means Z', corrcoef_means_out[split][-1], 'std Z', corrcoef_std_out2[split][-1])
         # print(split, 'means Y', corrcoef_means_out[split][-2], 'std Y', corrcoef_std_out2[split][-2])
         
