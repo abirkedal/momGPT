@@ -136,6 +136,9 @@ data_df = pd.concat(data, axis=0)
 data_df = data_df.reset_index(level=[0])
 data_df = data_df.rename(columns={'level_0': 'ticker'})
 
+# Other potential input data:
+# past volatility, volume, day of week/month/quarter, closeness to earnings announcement/dividend date, closeness to options expiry date, closeness to index rebal date
+# We can also try adding something like the mom-rev signal from https://arxiv.org/pdf/1107.0036
 ret_cols = ['overnight_return', 'into_close_safe_return', 'intraday_return', 'future_overnight_return']
 train_data_df = data_df[data_df.index <= isos_split_date][['ticker'] + ret_cols]
 train_data_gb = train_data_df.groupby('ticker')
@@ -158,19 +161,32 @@ for ticker in tickers:
 train_data_df = data_df[data_df.index <= isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 train_data = train_data_df.values
 
-corr_data = train_data_df[['into_close_safe_return', 'future_overnight_return']].copy()
-corr_data['into_close_safe_return'] = corr_data['into_close_safe_return'].clip(lower=-input_clip, upper=input_clip)
+corr_data = train_data_df.copy()
+corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
 corr_mat = corr_data.corr()
 cov_mat = corr_data.cov()
-train_ovn_linear_r2 = (corr_mat.values[0][1])**2
-train_ovn_linear_beta = cov_mat.values[0][1]/cov_mat.values[0][0]
+train_ovn_linear_r2 = (corr_mat.values[1][-1])**2
+train_ovn_linear_beta = cov_mat.values[1][-1]/cov_mat.values[1][1]
+train_ovn_linear_r2_vals = []
+train_ovn_linear_beta_vals = []
+for i in range(len(ret_cols)-1):
+    train_ovn_linear_r2_vals.append((corr_mat.values[i][-1])**2)
+    train_ovn_linear_beta_vals.append(cov_mat.values[i][-1]/cov_mat.values[i][i])
 
 val_data_df = data_df[data_df.index > isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 val_data = val_data_df.values
-val_corr_data = val_data_df[['into_close_safe_return', 'future_overnight_return']].copy()
-val_corr_data['into_close_safe_return'] = val_corr_data['into_close_safe_return'].clip(lower=-input_clip, upper=input_clip)
+val_corr_data = val_data_df.copy()
+val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
 val_ovn_linear_r2 = (val_corr_data[['into_close_safe_return', 'future_overnight_return']].corr().values[0][1])**2
-print(train_data.shape, train_ovn_linear_r2, train_ovn_linear_beta, val_ovn_linear_r2)
+val_corr_mat = val_corr_data.corr()
+val_cov_mat = val_corr_data.cov()
+val_ovn_linear_r2_vals = []
+val_ovn_linear_beta_vals = []
+for i in range(len(ret_cols)-1):
+    val_ovn_linear_r2_vals.append((val_corr_mat.values[i][-1])**2)
+    val_ovn_linear_beta_vals.append(val_cov_mat.values[i][-1]/val_cov_mat.values[i][i])
+
+print(train_data.shape, train_ovn_linear_r2_vals, train_ovn_linear_beta_vals, val_ovn_linear_r2_vals, val_ovn_linear_beta_vals)
 
 def get_batch(split):
     t = time.time()
