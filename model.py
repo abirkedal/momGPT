@@ -753,19 +753,22 @@ class OvnMomGPT(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.002)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.002)
 
+    def print_weights(self):
+        print(self.transformer.wte.state_dict()['weight'], self.lm_head.state_dict()['weight'])
+        
     def forward(self, idx, targets=None):
         device = idx.device
         # print(idx.size())
         # print(idx)
         b, ne, t = idx.size()
         # print('b, ne, t', b, ne, t)
-        # print(self.transformer.wte.weight.size())
+        # print(self.transformer.wte.weight)
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 

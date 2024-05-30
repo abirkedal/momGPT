@@ -57,7 +57,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 1024 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size1 = 7
+block_size1 = 4
 
 # model
 subtract_ovn_linear = False
@@ -95,6 +95,7 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+print('DDP:', ddp)
 if ddp:
     init_process_group(backend=backend)
     ddp_rank = int(os.environ['RANK'])
@@ -158,8 +159,8 @@ return_cols = ['overnight_return', 'into_close_safe_return', 'intraday_return', 
 # ret_cols = return_cols[:-1] + pred_cols + [return_cols[-1]]
 ret_cols = pred_cols + return_cols
 
-block_size1 = len(ret_cols)
-block_size2 = len(return_cols)
+block_size1 = len(return_cols)
+block_size2 = len(ret_cols)
 
 train_data_df = data_df[data_df.index <= isos_split_date][['ticker'] + ret_cols]
 train_data_gb = train_data_df.groupby('ticker')
@@ -346,10 +347,15 @@ if os.path.exists(meta_path):
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # model init
+models = {}
+models_args = {}
 model1_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size1,
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
 model2_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size2,
                   bias=bias, vocab_size=None, dropout=dropout)
+models_args['model1'] = model1_args
+models_args['model2'] = model2_args
+
 print('Using the following model_args:', model1_args, model2_args)
 
 if init_from == 'scratch':
@@ -358,15 +364,23 @@ if init_from == 'scratch':
     # determine the vocab size we'll use for from-scratch training
     if meta_vocab_size is None:
         print("defaulting to vocab_size of 1")
+    for m in models_args.keys():
+        models_args[m]['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
     model1_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
     model2_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
     gptconf1 = OvnMomGPTConfig(**model1_args)
     gptconf2 = OvnMomGPTConfig(**model2_args)
-    torch.manual_seed(0)
-    model1 = OvnMomGPT(gptconf1)
-    torch.manual_seed(0)
-    model2 = OvnMomGPT(gptconf2)
+    gptconfigs = {}
+    for m in models_args.keys():
+        gptconfigs[m] = OvnMomGPTConfig(**models_args[m])
+        torch.manual_seed(0)
+        models[m] = OvnMomGPT(gptconfigs[m])
+    # torch.manual_seed(0)
+    # model1 = OvnMomGPT(gptconf1)
+    # torch.manual_seed(0)
+    # model2 = OvnMomGPT(gptconf2)
 elif init_from == 'resume':
+    # !!!! Needs to be updated to use models dict, etc
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
     ckpt_path = os.path.join(out_dir, 'ckpt_without.pt')
@@ -379,8 +393,8 @@ elif init_from == 'resume':
     # create the model
     gptconf1 = OvnMomGPTConfig(**model1_args)
     gptconf2 = OvnMomGPTConfig(**model2_args)
-    model1 = OvnMomGPT(gptconf1)
-    model2 = OvnMomGPT(gptconf2)
+    # model1 = OvnMomGPT(gptconf1)
+    # model2 = OvnMomGPT(gptconf2)
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -393,40 +407,58 @@ elif init_from == 'resume':
     best_val_loss = checkpoint['best_val_loss']
 
 # crop down the model block size if desired, using model surgery
-if block_size1 < model1.config.block_size:
-    model1.crop_block_size(block_size1)
-    model1_args['block_size'] = block_size1 # so that the checkpoint will have the right value
-model1.to(device)
+# if block_size1 < model1.config.block_size:
+#     model1.crop_block_size(block_size1)
+#     model1_args['block_size'] = block_size1 # so that the checkpoint will have the right value
+# model1.to(device)
 
-if block_size2 < model2.config.block_size:
-    model2.crop_block_size(block_size2)
-    model2_args['block_size'] = block_size2
-model2.to(device)
+# if block_size2 < model2.config.block_size:
+#     model2.crop_block_size(block_size2)
+#     model2_args['block_size'] = block_size2
+# model2.to(device)
+
+for m in models.keys():
+    if gptconfigs[m].block_size < models[m].config.block_size:
+        models[m].crop_block_size(gptconfigs[m].block_size)
+        models_args[m]['block_size'] = gptconfigs[m].block_size
+    models[m].to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
-scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
-scaler2 = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+# scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+# scaler2 = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-optimizer = model1.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-optimizer2 = model2.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizers = {}
+scalers = {}
+for m in models.keys():
+    scalers[m] = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+    optimizers[m] = models[m].configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+    
+# optimizer = model1.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+# optimizer2 = model2.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 
-if init_from == 'resume':
-    optimizer.load_state_dict(checkpoint['optimizer'])
-checkpoint = None # free up memory
+# if init_from == 'resume':
+#     optimizer.load_state_dict(checkpoint['optimizer'])
+# checkpoint = None # free up memory
 
 # compile the model
+unoptimized_models = {}
 if compile:
     print("compiling the model... (takes a ~minute)")
-    unoptimized_model1 = model1
-    model1 = torch.compile(model1) # requires PyTorch 2.0
-    unoptimized_model2 = model2
-    model2 = torch.compile(model2) # requires PyTorch 2.0
+    for m in models.keys():
+        unoptimized_models[m] = models[m]
+        models[m] = torch.compile(models[m])
+    # unoptimized_model1 = model1
+    # model1 = torch.compile(model1) # requires PyTorch 2.0
+    # unoptimized_model2 = model2
+    # model2 = torch.compile(model2) # requires PyTorch 2.0
     
 # wrap model into DDP container
 if ddp:
-    model1 = DDP(model1, device_ids=[ddp_local_rank])
-    model2 = DDP(model2, device_ids=[ddp_local_rank])
+    for m in models.keys():
+        models[m] = DDP(models[m], device_ids=[ddp_local_rank])
+    # model1 = DDP(model1, device_ids=[ddp_local_rank])
+    # model2 = DDP(model2, device_ids=[ddp_local_rank])
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
@@ -441,39 +473,36 @@ def estimate_loss():
 
     # model.eval()
     # model2.eval()
-    for i in range(len(models)):
-        models[i].eval()
+    # for i in range(len(models)):
+        # models[i].eval()
+    for m in models.keys():
+        models[m].eval()
         
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         target_losses = torch.zeros(eval_iters)
-        corrcoefs_all = torch.zeros((len(models), eval_iters, 5, 5))
-        cov_all = torch.zeros((len(models), eval_iters, 5, 5))
+        corrcoefs_all = torch.zeros((len(models.keys()), eval_iters, 5, 5))
+        cov_all = torch.zeros((len(models.keys()), eval_iters, 5, 5))
         
         nan_count = 0
         for k in range(eval_iters):
             X1, Y1, Z1, X2, Y2, Z2 = get_batch(split, skip=skip_val)
-            for mod_ind in range(len(models)):
+            for mod_ind in range(len(models.keys())):
                 with ctx:
+                    mod = list(models.keys())[mod_ind]
+                    # print(mod_ind, mod, gptconfigs[mod])
                     if mod_ind==1:
                         X = X1.bfloat16()
                         Y = Y1.bfloat16()
                         Z = Z1.bfloat16()
+                        linear_pred = X[:, -1, skip_val+1]
                     else:
                         X = X2.bfloat16()
                         Y = Y2.bfloat16()
                         Z = Z2.bfloat16()
-
-                    logits, loss = models[mod_ind](X, Y)
-
-                    if mod_ind == 1:
-                        linear_pred = X[:, -1, skip_val+1]
-                    else:
                         linear_pred = X[:, -1, 1]
-
-                    # if k == 0:
-                    #     print(mod_ind)
-                    #     models[mod_ind].print_weights()
+                        
+                    logits, loss = models[list(models.keys())[mod_ind]](X, Y)
                     
                     prediction = torch.add(logits[:, -1, :].view(-1), linear_pred,
                                            alpha=train_ovn_linear_beta)
@@ -495,7 +524,7 @@ def estimate_loss():
         out[split] = losses.mean()
         target_out[split] = target_losses.mean()
 
-        for mod_ind in range(len(models)):
+        for mod_ind in range(len(models.keys())):
             cov_final = torch.zeros((5,5))
             corrcoefs_final = torch.zeros((5,5))
             corrcoefs_final_std = torch.zeros((5,5))
@@ -531,8 +560,10 @@ def estimate_loss():
             # print(X[:, -1, 1])
             # print(X2[:, -1, 1])
 
-    for i in range(len(models)):
-        models[i].train()
+    # for i in range(len(models)):
+        # models[i].train()
+    for m in models.keys():
+        models[m].train()
 
     return out, target_out
 
@@ -576,12 +607,16 @@ raw_model1 = model1.module if ddp else model1 # unwrap DDP container if needed
 raw_model2 = model2.module if ddp else model2 # unwrap DDP container if needed
 running_mfu = -1.0
 running_mfu2 = -1.0
-models = [model2, model1]
+# models = [model2, model1]
 
 while True:
 
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
+    for op in optimizers.keys():
+        for param_group in optimizers[op].param_groups:
+            param_group['lr'] = lr
+            
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
@@ -632,10 +667,20 @@ while True:
             model1.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             model2.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss = model1(X1, Y1)
-            loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
-            logits2, loss2 = model2(X2, Y2)
-            loss2 = loss2 / gradient_accumulation_steps
+            # logits, loss = model1(X1, Y1)
+            # loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+            # logits2, loss2 = model2(X2, Y2)
+            # loss2 = loss2 / gradient_accumulation_steps
+            mod_list = list(models.keys())
+            for mod_ind in range(len(models.keys())):
+                if mod_ind == 1:
+                    logits, loss = models[mod_list[mod_ind]](X1,Y1)
+                    loss = loss / gradient_accumulation_steps
+                else:
+                    logits2, loss2 = models[mod_list[mod_ind]](X2,Y2)
+                    loss2 = loss2 / gradient_accumulation_steps
+                    
+                
             # if micro_step == 0:
             #     print('micro_step')
             #     model1.print_weights()
@@ -643,17 +688,37 @@ while True:
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X1, Y1, Z1, X2, Y2, Z2 = get_batch('train', skip=skip_val)
         # backward pass, with gradient scaling if training in fp16
-        if not np.isnan(loss.item()):
-            scaler.scale(loss).backward()
-        if not np.isnan(loss2.item()):
-            scaler2.scale(loss2).backward()
+        mod_list = list(models.keys())
+        for mod_ind in range(len(models.keys())):
+            m = mod_list[mod_ind]
+            if mod_ind == 1:
+                if not np.isnan(loss.item()):
+                    scalers[m].scale(loss).backward()
+            else:
+                if not np.isnan(loss2.item()):
+                    scalers[m].scale(loss2).backward()
+        
+        # if not np.isnan(loss.item()):
+            # scaler.scale(loss).backward()
+        # if not np.isnan(loss2.item()):
+            # scaler2.scale(loss2).backward()
+            
     # clip the gradient
     if grad_clip != 0.0:
+        for m in models.keys():
+            scalers[m].unscale_(optimizers[m])
+            torch.nn.utils.clip_grad_norm_(models[m].parameters(), grad_clip)
         scaler.unscale_(optimizer)
         scaler2.unscale_(optimizer2)
         torch.nn.utils.clip_grad_norm_(model1.parameters(), grad_clip)
         torch.nn.utils.clip_grad_norm_(model2.parameters(), grad_clip)
+        
     # step the optimizer and scaler if training in fp16
+    for m in models.keys():
+        scalers[m].step(optimizers[m])
+        scalers[m].update()
+        optimizers[m].zero_grad(set_to_none=True)
+        
     scaler.step(optimizer)
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore

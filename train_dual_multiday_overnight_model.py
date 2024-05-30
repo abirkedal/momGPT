@@ -455,21 +455,18 @@ def estimate_loss():
             X1, Y1, Z1, X2, Y2, Z2 = get_batch(split, skip=skip_val)
             for mod_ind in range(len(models)):
                 with ctx:
-                    if mod_ind==1:
+                    if mod_ind==0:
                         X = X1.bfloat16()
                         Y = Y1.bfloat16()
                         Z = Z1.bfloat16()
+                        linear_pred = X[:, -1, skip_val+1]
                     else:
                         X = X2.bfloat16()
                         Y = Y2.bfloat16()
                         Z = Z2.bfloat16()
+                        linear_pred = X[:, -1, 1]
 
                     logits, loss = models[mod_ind](X, Y)
-
-                    if mod_ind == 1:
-                        linear_pred = X[:, -1, skip_val+1]
-                    else:
-                        linear_pred = X[:, -1, 1]
 
                     # if k == 0:
                     #     print(mod_ind)
@@ -576,7 +573,7 @@ raw_model1 = model1.module if ddp else model1 # unwrap DDP container if needed
 raw_model2 = model2.module if ddp else model2 # unwrap DDP container if needed
 running_mfu = -1.0
 running_mfu2 = -1.0
-models = [model2, model1]
+models = [model1, model2]
 
 while True:
 

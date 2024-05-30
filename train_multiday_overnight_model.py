@@ -41,7 +41,7 @@ log_interval = 1
 eval_iters = 1000
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
-init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
+init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 
 #important times of day
 intraday_start = datetime.time(10,00,00)
@@ -57,7 +57,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 1024 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 4
+block_size = 7
 
 # model
 subtract_ovn_linear = True
@@ -139,7 +139,20 @@ data_df = data_df.rename(columns={'level_0': 'ticker'})
 # Other potential input data:
 # past volatility, volume, day of week/month/quarter, closeness to earnings announcement/dividend date, closeness to options expiry date, closeness to index rebal date
 # We can also try adding something like the mom-rev signal from https://arxiv.org/pdf/1107.0036
-ret_cols = ['overnight_return', 'into_close_safe_return', 'intraday_return', 'future_overnight_return']
+pred_scale = 0.0157 # multiplier to put a (0,1) predictor on the scale of overnight returns. Is just the std of overnight_return
+data_df['day_qtr'] = (pd.to_datetime(data_df.index) - pd.PeriodIndex(pd.to_datetime(data_df.index), freq='Q').start_time).days + 1
+data_df['day_wk'] = pd.to_datetime(data_df.index).dayofweek
+data_df['day_yr'] = pd.to_datetime(data_df.index).dayofyear
+pred_cols= []
+for c in ['day_qtr', 'day_wk', 'day_yr']:
+    data_df[c+'_pred'] = pred_scale * data_df[c]/data_df[c].max()
+    pred_cols.append(c+'_pred')
+
+pred_cols = []
+print(data_df.head())
+
+return_cols = ['overnight_return', 'into_close_safe_return', 'intraday_return', 'future_overnight_return']
+ret_cols = return_cols[:-1] + pred_cols + [return_cols[-1]]
 train_data_df = data_df[data_df.index <= isos_split_date][['ticker'] + ret_cols]
 train_data_gb = train_data_df.groupby('ticker')
 tickers = list(train_data_gb.groups.keys())
@@ -152,17 +165,23 @@ train_data_vals_dict = {}
 val_data_vals_dict = {}
 for ticker in tickers:
     if drop_any_nan:
-        train_data_vals_dict[ticker]= train_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna().astype('float').values
+        train_data_vals_dict[ticker] = train_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna().astype('float').values
         val_data_vals_dict[ticker]= val_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna().astype('float').values
     else:
         train_data_vals_dict[ticker]= train_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
         val_data_vals_dict[ticker]= val_data_gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
 
-train_data_df = data_df[data_df.index <= isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
+if drop_any_nan:
+    train_data_df = data_df[data_df.index <= isos_split_date][ret_cols].replace(0.0, np.nan).dropna().fillna(0).astype('float')
+    val_data_df = data_df[data_df.index > isos_split_date][ret_cols].replace(0.0, np.nan).dropna().fillna(0).astype('float')
+else:
+    train_data_df = data_df[data_df.index <= isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
+    val_data_df = data_df[data_df.index > isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
 train_data = train_data_df.values
 
 corr_data = train_data_df.copy()
-corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
+# corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
+corr_data[ret_cols] = corr_data[ret_cols].clip(lower=-input_clip, upper=input_clip)
 corr_mat = corr_data.corr()
 cov_mat = corr_data.cov()
 train_ovn_linear_r2 = (corr_mat.values[1][-1])**2
@@ -173,11 +192,13 @@ for i in range(len(ret_cols)-1):
     train_ovn_linear_r2_vals.append((corr_mat.values[i][-1])**2)
     train_ovn_linear_beta_vals.append(cov_mat.values[i][-1]/cov_mat.values[i][i])
 
-val_data_df = data_df[data_df.index > isos_split_date][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float')
+
 val_data = val_data_df.values
 val_corr_data = val_data_df.copy()
-val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
-val_ovn_linear_r2 = (val_corr_data[['into_close_safe_return', 'future_overnight_return']].corr().values[0][1])**2
+# val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
+# val_ovn_linear_r2 = (val_corr_data[['into_close_safe_return', 'future_overnight_return']].corr().values[0][1])**2
+val_corr_data[ret_cols] = val_corr_data[ret_cols].clip(lower=-input_clip, upper=input_clip)
+val_ovn_linear_r2 = (val_corr_data[ret_cols].corr().values[0][1])**2
 val_corr_mat = val_corr_data.corr()
 val_cov_mat = val_corr_data.cov()
 val_ovn_linear_r2_vals = []
@@ -386,6 +407,7 @@ def estimate_loss():
                 logits, loss = model(X, Y)
 
                 linear_pred = X[:, -1, 1]
+                # print(X.shape)
                 
                 if subtract_ovn_linear:
                     Z = Z.bfloat16()
@@ -431,13 +453,21 @@ def estimate_loss():
 
         print(split, 'means')
         # print(cov_means_out[split])
-        print(cov_means_out[split][0][-1].item()/cov_means_out[split][0][0].item(),cov_means_out[split][1][-1].item()/cov_means_out[split][1][1].item(),cov_means_out[split][2][-1].item()/cov_means_out[split][2][2].item(),cov_means_out[split][0][-2].item()/cov_means_out[split][0][0].item(),cov_means_out[split][1][-2].item()/cov_means_out[split][1][1].item(),cov_means_out[split][2][-2].item()/cov_means_out[split][2][2].item())
-        print(cov_means_out[split][0][-1].item()/np.sqrt(cov_means_out[split][0][0].item()*cov_means_out[split][-1][-1].item()),cov_means_out[split][1][-1].item()/np.sqrt(cov_means_out[split][1][1].item()*cov_means_out[split][-1][-1].item()),cov_means_out[split][2][-1].item()/np.sqrt(cov_means_out[split][2][2].item()*cov_means_out[split][-1][-1].item()),cov_means_out[split][0][-2].item()/np.sqrt(cov_means_out[split][0][0].item()*cov_means_out[split][-2][-2].item()),cov_means_out[split][1][-2].item()/np.sqrt(cov_means_out[split][1][1].item()*cov_means_out[split][-2][-2].item()),cov_means_out[split][2][-2].item()/np.sqrt(cov_means_out[split][2][2].item()*cov_means_out[split][-2][-2].item()))
-        # print(corrcoef_means_out[split])
-        # print(split, 'std')
-        # print(corrcoef_std_out2[split])
-        # print(split, 'means Z', corrcoef_means_out[split][-1], 'std Z', corrcoef_std_out2[split][-1])
-        # print(split, 'means Y', corrcoef_means_out[split][-2], 'std Y', corrcoef_std_out2[split][-2])
+        beta1_string = ''
+        beta2_string = ''
+        corr1_string = ''
+        corr2_string = ''
+        for i in range(3):
+            b1 = cov_means_out[split][i][-1].item()/cov_means_out[split][i][i].item()
+            b2 = cov_means_out[split][i][-2].item()/cov_means_out[split][i][i].item()
+            c1 = cov_means_out[split][i][-1].item()/np.sqrt(cov_means_out[split][i][i].item()*cov_means_out[split][-1][-1].item())
+            c2 = cov_means_out[split][i][-2].item()/np.sqrt(cov_means_out[split][i][i].item()*cov_means_out[split][-2][-2].item())
+            beta1_string = beta1_string + "{:.3},".format(b1)
+            beta2_string = beta2_string + "{:.3},".format(b2)
+            corr1_string = corr1_string + "{:.3},".format(c1)
+            corr2_string = corr2_string + "{:.3},".format(c2)
+        print(beta1_string, beta2_string)
+        print(corr1_string, corr2_string)
         
     model.train()
 
