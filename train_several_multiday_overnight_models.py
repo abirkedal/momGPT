@@ -516,8 +516,8 @@ def estimate_loss():
 
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
-                target_losses[k] = model1.get_target_loss(Y).item()
-                tmp = model2.get_target_loss(Y).item()
+                target_losses[k] = models[list(models.keys())[mod_ind]].get_target_loss(Y).item()
+                # tmp = model2.get_target_loss(Y).item()
             else:
                 nan_count += 1
 
