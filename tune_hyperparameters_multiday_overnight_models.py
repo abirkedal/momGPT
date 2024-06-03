@@ -30,7 +30,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from model import OvnMomGPTConfig, OvnMomGPT
+from model import OvnMomGPTConfig, OvnMomGPT, CuttingEdgeMLConfig, CuttingEdgeML
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -159,6 +159,7 @@ return_cols = ['overnight_return', 'into_close_safe_return', 'intraday_return', 
 # ret_cols = return_cols[:-1] + pred_cols + [return_cols[-1]]
 ret_cols = pred_cols + return_cols
 
+n_feature = len(return_cols) - 1
 block_size1 = len(return_cols)
 # block_size2 = len(ret_cols)
 
@@ -352,16 +353,23 @@ if os.path.exists(meta_path):
 # model init
 n_layer1 = 0
 n_layer2 = 2
+n_layers = {'model0': 0, 'model1': 1, 'model2': 2, 'model3': 3, 'model10': 10, 'model30': 30, 'model300': 300}
 models = {}
 models_args = {}
 model1_args = dict(n_layer=n_layer1, n_head=n_head, n_embd=n_embd, block_size=block_size1,
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
 model2_args = dict(n_layer=n_layer2, n_head=n_head, n_embd=n_embd, block_size=block_size1,
                   bias=bias, vocab_size=None, dropout=dropout)
-models_args['model1'] = model1_args
-models_args['model2'] = model2_args
+model_args_default = dict(n_layer=n_layer1, n_head=n_head, n_embd=n_embd, block_size=block_size1,
+                  bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
+for m in n_layers.keys():
+    models_args[m] = model_args_default.copy()
+    models_args[m]['n_layer'] = n_layers[m]
 
-print('Using the following model_args:', model1_args, model2_args)
+# models_args['model1'] = model1_args
+# models_args['model2'] = model2_args
+
+print('Using the following model_args:', models_args)
 
 if init_from == 'scratch':
     # init a new model from scratch
@@ -371,19 +379,18 @@ if init_from == 'scratch':
         print("defaulting to vocab_size of 1")
     for m in models_args.keys():
         models_args[m]['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
-    # model1_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
-    # model2_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 1
-    # gptconf1 = OvnMomGPTConfig(**model1_args)
-    # gptconf2 = OvnMomGPTConfig(**model2_args)
     gptconfigs = {}
     for m in models_args.keys():
-        gptconfigs[m] = OvnMomGPTConfig(**models_args[m])
-        torch.manual_seed(0)
-        models[m] = OvnMomGPT(gptconfigs[m])
-    # torch.manual_seed(0)
-    # model1 = OvnMomGPT(gptconf1)
-    # torch.manual_seed(0)
-    # model2 = OvnMomGPT(gptconf2)
+        if m == 'model0':
+            models_args[m]['n_feature'] = n_feature
+            gptconfigs[m] = CuttingEdgeMLConfig(**models_args[m])
+            torch.manual_seed(0)
+            models[m] = CuttingEdgeML(gptconfigs[m])
+        else:
+            gptconfigs[m] = OvnMomGPTConfig(**models_args[m])
+            torch.manual_seed(0)
+            models[m] = OvnMomGPT(gptconfigs[m])
+
 elif init_from == 'resume':
     # !!!! Needs to be updated to use models dict, etc
     print(f"Resuming training from {out_dir}")
@@ -396,10 +403,6 @@ elif init_from == 'resume':
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model1_args[k] = checkpoint_model_args[k]
     # create the model
-    # gptconf1 = OvnMomGPTConfig(**model1_args)
-    # gptconf2 = OvnMomGPTConfig(**model2_args)
-    # model1 = OvnMomGPT(gptconf1)
-    # model2 = OvnMomGPT(gptconf2)
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -410,17 +413,6 @@ elif init_from == 'resume':
     model1.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
-
-# crop down the model block size if desired, using model surgery
-# if block_size1 < model1.config.block_size:
-#     model1.crop_block_size(block_size1)
-#     model1_args['block_size'] = block_size1 # so that the checkpoint will have the right value
-# model1.to(device)
-
-# if block_size2 < model2.config.block_size:
-#     model2.crop_block_size(block_size2)
-#     model2_args['block_size'] = block_size2
-# model2.to(device)
 
 for m in models.keys():
     if gptconfigs[m].block_size < models[m].config.block_size:
@@ -438,13 +430,6 @@ scalers = {}
 for m in models.keys():
     scalers[m] = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
     optimizers[m] = models[m].configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-    
-# optimizer = model1.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-# optimizer2 = model2.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-
-# if init_from == 'resume':
-#     optimizer.load_state_dict(checkpoint['optimizer'])
-# checkpoint = None # free up memory
 
 # compile the model
 unoptimized_models = {}
@@ -453,17 +438,11 @@ if compile:
     for m in models.keys():
         unoptimized_models[m] = models[m]
         models[m] = torch.compile(models[m])
-    # unoptimized_model1 = model1
-    # model1 = torch.compile(model1) # requires PyTorch 2.0
-    # unoptimized_model2 = model2
-    # model2 = torch.compile(model2) # requires PyTorch 2.0
     
 # wrap model into DDP container
 if ddp:
     for m in models.keys():
         models[m] = DDP(models[m], device_ids=[ddp_local_rank])
-    # model1 = DDP(model1, device_ids=[ddp_local_rank])
-    # model2 = DDP(model2, device_ids=[ddp_local_rank])
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
@@ -476,10 +455,6 @@ def estimate_loss():
     corrcoef_means_out = {}
     corrcoef_std_out2 = {}
 
-    # model.eval()
-    # model2.eval()
-    # for i in range(len(models)):
-        # models[i].eval()
     for m in models.keys():
         models[m].eval()
         
@@ -500,19 +475,19 @@ def estimate_loss():
                     Y = Y2.bfloat16()
                     Z = Z2.bfloat16()
                     linear_pred = X[:, -1, 1]
-                    
-                    # else:
-                    #     X = X1.bfloat16()
-                    #     Y = Y1.bfloat16()
-                    #     Z = Z1.bfloat16()
-                    #     linear_pred = X[:, -1, skip_val+1]
                         
                     logits, loss = models[list(models.keys())[mod_ind]](X, Y)
-                    
-                    prediction = torch.add(logits[:, -1, :].view(-1), linear_pred,
+
+                    if mod_ind==0: # just regression
+                        prediction = torch.add(logits[:, -1], linear_pred,
                                            alpha=train_ovn_linear_beta)
-                    new_mat = torch.row_stack((prediction, train_ovn_linear_beta * linear_pred,
-                                               logits[:, -1, :].view(-1), Y[:, -1, -1], Z[:, -1, -1]))
+                        new_mat = torch.row_stack((prediction, train_ovn_linear_beta * linear_pred,
+                                            logits[:, -1], Y[:, -1, -1], Z[:, -1, -1]))
+                    else:
+                        prediction = torch.add(logits[:, -1, :].view(-1), linear_pred,
+                                           alpha=train_ovn_linear_beta)
+                        new_mat = torch.row_stack((prediction, train_ovn_linear_beta * linear_pred,
+                                            logits[:, -1, :].view(-1), Y[:, -1, -1], Z[:, -1, -1]))
                     corrcoefs_mat = torch.corrcoef(new_mat)
                     cov_mat = torch.cov(new_mat)
                     
@@ -544,6 +519,8 @@ def estimate_loss():
             corrcoef_std_out2[split] = corrcoefs_final_std
 
             print(mod_ind, split, 'means')
+            if mod_ind == 0:
+                print(models[list(models.keys())[0]].print_weights())
             # print(cov_means_out[split])
             beta1_string = 'Z '
             beta2_string = 'Y '
@@ -594,18 +571,8 @@ if wandb_log and master_process:
 # training loop
 torch.manual_seed(0)
 
-# Here the Y is the same as the X, but shifted one to the left
-# data = np.load('/home/andreas/momGPT/data/firstratedata/multi_ticker_dict_intraday.npy', allow_pickle='TRUE').item()
-# data_df = pd.concat(data, axis=0)
-# data_df = data_df.reset_index(level=[0])
-# data_df = data_df.rename(columns={'level_0': 'ticker'})
-
-# train_data = data_df[data_df.index <= isos_split_date][['overnight_return', 'into_close_safe_return', 'intraday_return', 'future_overnight_return']].fillna(0).astype('float').values
-
 X1, Y1, Z1, X2, Y2, Z2 = get_batch('train', skip=skip_val) # fetch the very first batch
-# print(X.size(), Y.size(), torch.tensor(train_data).size())
-# print(X)
-# print(Y)
+
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model1 = models['model1'].module if ddp else models['model1'] # unwrap DDP container if needed
@@ -621,12 +588,6 @@ while True:
     for op in optimizers.keys():
         for param_group in optimizers[op].param_groups:
             param_group['lr'] = lr
-            
-    # for param_group in optimizer.param_groups:
-    #     param_group['lr'] = lr
-
-    # for param_group in optimizer2.param_groups:
-    #     param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
@@ -651,7 +612,7 @@ while True:
                 checkpoint = {
                     'model': raw_model2.state_dict(),
                     'optimizer': optimizers[list(optimizers.keys())[1]].state_dict(),
-                    'model_args': model2_args,
+                    'model_args': models_args[list(models_args.keys())[1]],
                     'iter_num': iter_num,
                     'best_val_loss': best_val_loss,
                     'config': config,
@@ -699,43 +660,20 @@ while True:
         mod_list = list(models.keys())
         for mod_ind in range(len(models.keys())):
             m = mod_list[mod_ind]
-            # if mod_ind == 1:
             if not np.isnan(losses[m].item()):
                 scalers[m].scale(losses[m]).backward()
-            # else:
-            #     if not np.isnan(loss2.item()):
-            #         scalers[m].scale(loss2).backward()
-        
-        # if not np.isnan(loss.item()):
-            # scaler.scale(loss).backward()
-        # if not np.isnan(loss2.item()):
-            # scaler2.scale(loss2).backward()
             
     # clip the gradient
     if grad_clip != 0.0:
         for m in models.keys():
             scalers[m].unscale_(optimizers[m])
             torch.nn.utils.clip_grad_norm_(models[m].parameters(), grad_clip)
-        # scaler.unscale_(optimizer)
-        # scaler2.unscale_(optimizer2)
-        # torch.nn.utils.clip_grad_norm_(model1.parameters(), grad_clip)
-        # torch.nn.utils.clip_grad_norm_(model2.parameters(), grad_clip)
         
     # step the optimizer and scaler if training in fp16
     for m in models.keys():
         scalers[m].step(optimizers[m])
         scalers[m].update()
         optimizers[m].zero_grad(set_to_none=True)
-        
-    # scaler.step(optimizer)
-    # scaler.update()
-    # # flush the gradients as soon as we can, no need for this memory anymore
-    # optimizer.zero_grad(set_to_none=True)
-
-    # scaler2.step(optimizer2)
-    # scaler2.update()
-    # # flush the gradients as soon as we can, no need for this memory anymore
-    # optimizer2.zero_grad(set_to_none=True)
 
     # timing and logging
     t1 = time.time()
