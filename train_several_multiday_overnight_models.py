@@ -115,7 +115,6 @@ else:
     seed_offset = 0
     ddp_world_size = 1
 tokens_per_iter1 = gradient_accumulation_steps * ddp_world_size * batch_size * block_size1
-# tokens_per_iter2 = gradient_accumulation_steps * ddp_world_size * batch_size * block_size2
 print(f"tokens per iteration will be: {tokens_per_iter1:,}")
 
 if master_process:
@@ -130,9 +129,6 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
-# train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-# val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-# print(train_data.shape)
 data = np.load('/home/andreas/momGPT/data/firstratedata/multi_ticker_dict_intraday.npy', allow_pickle='TRUE').item()
 data_df = pd.concat(data, axis=0)
 data_df = data_df.reset_index(level=[0])
@@ -149,14 +145,9 @@ pred_cols= []
 for c in ['day_qtr', 'day_wk', 'day_yr']:
     data_df[c+'_pred'] = pred_scale * (data_df[c] - data_df[c].median())/data_df[c].max()
     pred_cols.append(c+'_pred')
-
-# pred_cols = ['day_wk_pred']
-# print(data_df.head())
-
 skip_val = len(pred_cols)
 return_cols = ['overnight_return', 'into_close_safe_return', 'intraday_return', 'future_overnight_return']
 
-# ret_cols = return_cols[:-1] + pred_cols + [return_cols[-1]]
 ret_cols = pred_cols + return_cols
 
 block_size1 = len(return_cols)
@@ -165,8 +156,7 @@ block_size2 = len(ret_cols)
 train_data_df = data_df[data_df.index <= isos_split_date][['ticker'] + ret_cols]
 train_data_gb = train_data_df.groupby('ticker')
 tickers = list(train_data_gb.groups.keys())
-# print(tickers[0], train_data_gb.get_group(tickers[0])[ret_cols])
-# print(tickers[0], train_data_gb.get_group(tickers[0])[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values)
+
 val_data_df = data_df[data_df.index > isos_split_date][['ticker'] + ret_cols]
 val_data_gb = val_data_df.groupby('ticker')
 
@@ -189,7 +179,7 @@ else:
 train_data = train_data_df.values
 
 corr_data = train_data_df.copy()
-# corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
+
 corr_data[ret_cols] = corr_data[ret_cols].clip(lower=-input_clip, upper=input_clip)
 corr_mat = corr_data.corr()
 cov_mat = corr_data.cov()
@@ -204,8 +194,6 @@ for i in range(len(ret_cols)-1):
 
 val_data = val_data_df.values
 val_corr_data = val_data_df.copy()
-# val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']] = val_corr_data[['overnight_return', 'into_close_safe_return', 'intraday_return']].clip(lower=-input_clip, upper=input_clip)
-# val_ovn_linear_r2 = (val_corr_data[['into_close_safe_return', 'future_overnight_return']].corr().values[0][1])**2
 val_corr_data[ret_cols] = val_corr_data[ret_cols].clip(lower=-input_clip, upper=input_clip)
 val_ovn_linear_r2 = (val_corr_data[ret_cols].corr().values[linear_ind][-1])**2
 val_corr_mat = val_corr_data.corr()
@@ -221,13 +209,10 @@ print(train_data.shape, train_ovn_linear_r2_vals, train_ovn_linear_beta_vals, va
 def get_batch(split, skip=0):
     t = time.time()
     if split == 'train':
-        # datadf = train_data_df
         dfd = train_data_vals_dict
     else:
-        # datadf = val_data_df
         dfd = val_data_vals_dict
     
-    # tickers = datadf['ticker'].unique()
     tickers = list(dfd.keys())
     
     ix = torch.randint(len(tickers), (2 * batch_size,))
@@ -241,49 +226,34 @@ def get_batch(split, skip=0):
     zl2 = []
 
     t1 = time.time()
-    # print('get_batch prep', t1 - t)
     
     count = 0
     for i in ix:
         if count < batch_size:
             ticker = tickers[i]
-            # ticker = tickers[0]
-            # My old version that used the following is incredibly slow, since we are pawing through the entire
-            # datadf each iteration:
-            # data = datadf[datadf.ticker == ticker][ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
-            # data = gb.get_group(ticker)[ret_cols].replace(0.0, np.nan).dropna(how='all').fillna(0).astype('float').values
+
             data = dfd[ticker]
-            
-            # print('j', data.shape[0], gptconf.n_embd)
+
             ds0 = data.shape[0]
             if ds0 - gptconf1.n_embd > 0:
-                # if count < batch_size:
+
                 j = torch.randint(ds0 - gptconf1.n_embd, (1,))[0]
-                # j = 0
                 xd = np.clip(data[j:(j+gptconf1.n_embd), :-1], -input_clip, input_clip)
                 yd = data[j:(j+gptconf1.n_embd), 1:].copy()
                 zd = data[j:(j+gptconf1.n_embd), 1:].copy()
                 
                 if skip > 0:
                     xd2 = np.clip(data[j:(j+gptconf1.n_embd), :-1][:, skip:], -input_clip, input_clip)
-                    # dm = data[j:(j+gptconf.n_embd), 1:]
-                    # yd2 = np.delete(dm, range(dm.shape[1]-1-skip, dm.shape[1]-1), 1).copy()
                     yd2 = data[j:(j+gptconf1.n_embd), (skip+1):].copy()
                     zd2 = yd2.copy()
-                    # yd2 = data[j:(j+gptconf.n_embd), 1:][:,:-skip].copy()
-                    # zd2 = data[j:(j+gptconf.n_embd), 1:][:,:-skip].copy()
                 else:
                     xd2 = np.clip(data[j:(j+gptconf1.n_embd), :-1], -input_clip, input_clip)
                     yd2 = data[j:(j+gptconf1.n_embd), 1:].copy()
                     zd2 = data[j:(j+gptconf1.n_embd), 1:].copy()
-                # print(xd)
-                # print(zd)
                 if subtract_ovn_linear:
                     yd[:, -1] = yd[:, -1] - train_ovn_linear_beta * xd[:, skip+1]
                     yd2[:, -1] = yd2[:, -1] - train_ovn_linear_beta * xd2[:, 1]
                     
-                    # print('yd', yd)
-                    # print('zd', zd)
                 xl.append(torch.from_numpy((xd)))
                 yl.append(torch.from_numpy((yd)))
                 zl.append(torch.from_numpy((zd)))
@@ -324,9 +294,7 @@ def get_batch(split, skip=0):
             z = z.to(device)
             z2 = z2.to(device)
 
-    # print('ix: ', ix)
     t3 = time.time()
-    # print('get_batch completion', t3 - t2)
 
     if len(zl) > 0:
         return x, y, z, x2, y2, z2
@@ -375,10 +343,7 @@ if init_from == 'scratch':
         gptconfigs[m] = OvnMomGPTConfig(**models_args[m])
         torch.manual_seed(0)
         models[m] = OvnMomGPT(gptconfigs[m])
-    # torch.manual_seed(0)
-    # model1 = OvnMomGPT(gptconf1)
-    # torch.manual_seed(0)
-    # model2 = OvnMomGPT(gptconf2)
+
 elif init_from == 'resume':
     # !!!! Needs to be updated to use models dict, etc
     print(f"Resuming training from {out_dir}")
@@ -393,8 +358,7 @@ elif init_from == 'resume':
     # create the model
     gptconf1 = OvnMomGPTConfig(**model1_args)
     gptconf2 = OvnMomGPTConfig(**model2_args)
-    # model1 = OvnMomGPT(gptconf1)
-    # model2 = OvnMomGPT(gptconf2)
+
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -406,26 +370,11 @@ elif init_from == 'resume':
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
 
-# crop down the model block size if desired, using model surgery
-# if block_size1 < model1.config.block_size:
-#     model1.crop_block_size(block_size1)
-#     model1_args['block_size'] = block_size1 # so that the checkpoint will have the right value
-# model1.to(device)
-
-# if block_size2 < model2.config.block_size:
-#     model2.crop_block_size(block_size2)
-#     model2_args['block_size'] = block_size2
-# model2.to(device)
-
 for m in models.keys():
     if gptconfigs[m].block_size < models[m].config.block_size:
         models[m].crop_block_size(gptconfigs[m].block_size)
         models_args[m]['block_size'] = gptconfigs[m].block_size
     models[m].to(device)
-
-# initialize a GradScaler. If enabled=False scaler is a no-op
-# scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
-# scaler2 = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
 optimizers = {}
@@ -433,13 +382,6 @@ scalers = {}
 for m in models.keys():
     scalers[m] = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
     optimizers[m] = models[m].configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-    
-# optimizer = model1.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-# optimizer2 = model2.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-
-# if init_from == 'resume':
-#     optimizer.load_state_dict(checkpoint['optimizer'])
-# checkpoint = None # free up memory
 
 # compile the model
 unoptimized_models = {}
@@ -448,17 +390,11 @@ if compile:
     for m in models.keys():
         unoptimized_models[m] = models[m]
         models[m] = torch.compile(models[m])
-    # unoptimized_model1 = model1
-    # model1 = torch.compile(model1) # requires PyTorch 2.0
-    # unoptimized_model2 = model2
-    # model2 = torch.compile(model2) # requires PyTorch 2.0
     
 # wrap model into DDP container
 if ddp:
     for m in models.keys():
         models[m] = DDP(models[m], device_ids=[ddp_local_rank])
-    # model1 = DDP(model1, device_ids=[ddp_local_rank])
-    # model2 = DDP(model2, device_ids=[ddp_local_rank])
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
@@ -471,10 +407,6 @@ def estimate_loss():
     corrcoef_means_out = {}
     corrcoef_std_out2 = {}
 
-    # model.eval()
-    # model2.eval()
-    # for i in range(len(models)):
-        # models[i].eval()
     for m in models.keys():
         models[m].eval()
         
@@ -517,7 +449,7 @@ def estimate_loss():
             if not np.isnan(loss.item()):   
                 losses[k] = loss.item()
                 target_losses[k] = models[list(models.keys())[mod_ind]].get_target_loss(Y).item()
-                # tmp = model2.get_target_loss(Y).item()
+
             else:
                 nan_count += 1
 
@@ -589,18 +521,8 @@ if wandb_log and master_process:
 # training loop
 torch.manual_seed(0)
 
-# Here the Y is the same as the X, but shifted one to the left
-# data = np.load('/home/andreas/momGPT/data/firstratedata/multi_ticker_dict_intraday.npy', allow_pickle='TRUE').item()
-# data_df = pd.concat(data, axis=0)
-# data_df = data_df.reset_index(level=[0])
-# data_df = data_df.rename(columns={'level_0': 'ticker'})
-
-# train_data = data_df[data_df.index <= isos_split_date][['overnight_return', 'into_close_safe_return', 'intraday_return', 'future_overnight_return']].fillna(0).astype('float').values
-
 X1, Y1, Z1, X2, Y2, Z2 = get_batch('train', skip=skip_val) # fetch the very first batch
-# print(X.size(), Y.size(), torch.tensor(train_data).size())
-# print(X)
-# print(Y)
+
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model1 = models['model1'].module if ddp else models['model1'] # unwrap DDP container if needed
@@ -616,12 +538,6 @@ while True:
     for op in optimizers.keys():
         for param_group in optimizers[op].param_groups:
             param_group['lr'] = lr
-            
-    # for param_group in optimizer.param_groups:
-    #     param_group['lr'] = lr
-
-    # for param_group in optimizer2.param_groups:
-    #     param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
@@ -667,10 +583,6 @@ while True:
             model1.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             model2.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            # logits, loss = model1(X1, Y1)
-            # loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
-            # logits2, loss2 = model2(X2, Y2)
-            # loss2 = loss2 / gradient_accumulation_steps
             mod_list = list(models.keys())
             for mod_ind in range(len(models.keys())):
                 if mod_ind == 1:
@@ -680,11 +592,6 @@ while True:
                     logits2, loss2 = models[mod_list[mod_ind]](X2,Y2)
                     loss2 = loss2 / gradient_accumulation_steps
                     
-                
-            # if micro_step == 0:
-            #     print('micro_step')
-            #     model1.print_weights()
-            #     model2.print_weights()
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X1, Y1, Z1, X2, Y2, Z2 = get_batch('train', skip=skip_val)
         # backward pass, with gradient scaling if training in fp16
@@ -697,21 +604,12 @@ while True:
             else:
                 if not np.isnan(loss2.item()):
                     scalers[m].scale(loss2).backward()
-        
-        # if not np.isnan(loss.item()):
-            # scaler.scale(loss).backward()
-        # if not np.isnan(loss2.item()):
-            # scaler2.scale(loss2).backward()
-            
+                    
     # clip the gradient
     if grad_clip != 0.0:
         for m in models.keys():
             scalers[m].unscale_(optimizers[m])
             torch.nn.utils.clip_grad_norm_(models[m].parameters(), grad_clip)
-        # scaler.unscale_(optimizer)
-        # scaler2.unscale_(optimizer2)
-        # torch.nn.utils.clip_grad_norm_(model1.parameters(), grad_clip)
-        # torch.nn.utils.clip_grad_norm_(model2.parameters(), grad_clip)
         
     # step the optimizer and scaler if training in fp16
     for m in models.keys():
@@ -719,16 +617,6 @@ while True:
         scalers[m].update()
         optimizers[m].zero_grad(set_to_none=True)
         
-    # scaler.step(optimizer)
-    # scaler.update()
-    # # flush the gradients as soon as we can, no need for this memory anymore
-    # optimizer.zero_grad(set_to_none=True)
-
-    # scaler2.step(optimizer2)
-    # scaler2.update()
-    # # flush the gradients as soon as we can, no need for this memory anymore
-    # optimizer2.zero_grad(set_to_none=True)
-
     # timing and logging
     t1 = time.time()
     dt = t1 - t0
