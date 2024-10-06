@@ -45,7 +45,7 @@ log_interval = 1
 eval_iters = 100
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
-init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
+init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 
 eval_rf = True
 
@@ -96,6 +96,10 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 if 'out_file' not in config.keys():
     config['out_file'] = out_file
+
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -331,7 +335,7 @@ def compute_loss():
             res = mod.fit()
             if eval_rf:
                 print('fitting RF')
-                regr = RandomForestRegressor(max_depth=8, min_samples_leaf=10, random_state=0)
+                regr = RandomForestRegressor(max_depth=12, min_samples_leaf=10, random_state=0)
                 regr.fit(x, y)
         with ctx:
             X = X.bfloat16()

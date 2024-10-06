@@ -603,8 +603,8 @@ X1, Y1, Z1, X2, Y2, Z2 = get_batch('train', skip=skip_val) # fetch the very firs
 # print(Y)
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
-raw_model1 = model1.module if ddp else model1 # unwrap DDP container if needed
-raw_model2 = model2.module if ddp else model2 # unwrap DDP container if needed
+raw_model1 = models['model1'].module if ddp else models['model1'] # unwrap DDP container if needed
+raw_model2 = models['model2'].module if ddp else models['model2'] # unwrap DDP container if needed
 running_mfu = -1.0
 running_mfu2 = -1.0
 # models = [model2, model1]
@@ -617,11 +617,11 @@ while True:
         for param_group in optimizers[op].param_groups:
             param_group['lr'] = lr
             
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+    # for param_group in optimizer.param_groups:
+    #     param_group['lr'] = lr
 
-    for param_group in optimizer2.param_groups:
-        param_group['lr'] = lr
+    # for param_group in optimizer2.param_groups:
+    #     param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
@@ -645,7 +645,7 @@ while True:
             if iter_num > 0:
                 checkpoint = {
                     'model': raw_model2.state_dict(),
-                    'optimizer': optimizer2.state_dict(),
+                    'optimizer': optimizers['model2'].state_dict(),
                     'model_args': model2_args,
                     'iter_num': iter_num,
                     'best_val_loss': best_val_loss,
@@ -708,10 +708,10 @@ while True:
         for m in models.keys():
             scalers[m].unscale_(optimizers[m])
             torch.nn.utils.clip_grad_norm_(models[m].parameters(), grad_clip)
-        scaler.unscale_(optimizer)
-        scaler2.unscale_(optimizer2)
-        torch.nn.utils.clip_grad_norm_(model1.parameters(), grad_clip)
-        torch.nn.utils.clip_grad_norm_(model2.parameters(), grad_clip)
+        # scaler.unscale_(optimizer)
+        # scaler2.unscale_(optimizer2)
+        # torch.nn.utils.clip_grad_norm_(model1.parameters(), grad_clip)
+        # torch.nn.utils.clip_grad_norm_(model2.parameters(), grad_clip)
         
     # step the optimizer and scaler if training in fp16
     for m in models.keys():
@@ -719,15 +719,15 @@ while True:
         scalers[m].update()
         optimizers[m].zero_grad(set_to_none=True)
         
-    scaler.step(optimizer)
-    scaler.update()
-    # flush the gradients as soon as we can, no need for this memory anymore
-    optimizer.zero_grad(set_to_none=True)
+    # scaler.step(optimizer)
+    # scaler.update()
+    # # flush the gradients as soon as we can, no need for this memory anymore
+    # optimizer.zero_grad(set_to_none=True)
 
-    scaler2.step(optimizer2)
-    scaler2.update()
-    # flush the gradients as soon as we can, no need for this memory anymore
-    optimizer2.zero_grad(set_to_none=True)
+    # scaler2.step(optimizer2)
+    # scaler2.update()
+    # # flush the gradients as soon as we can, no need for this memory anymore
+    # optimizer2.zero_grad(set_to_none=True)
 
     # timing and logging
     t1 = time.time()
